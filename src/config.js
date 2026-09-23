@@ -52,8 +52,8 @@ export function validateConfig(raw) {
   let readers = 0
   let writers = 0
   for (const destination of destinations) {
-    if (!isObject(destination) || typeof destination.id !== 'string' || !destination.id || ids.has(destination.id)) {
-      throw new Error('Destination ids must be unique non-empty strings')
+    if (!isObject(destination) || typeof destination.id !== 'string' || !/^[a-z0-9][a-z0-9-]*$/.test(destination.id) || ids.has(destination.id)) {
+      throw new Error('Destination ids must be unique lowercase slugs')
     }
     ids.add(destination.id)
     if (!['victoriametrics', 'prometheus-compatible'].includes(destination.kind)) {
@@ -65,6 +65,18 @@ export function validateConfig(raw) {
     }
     if (destination.mode === 'host-binary' && !isAbsolutePath(destination.binaryPath)) {
       throw new Error(`Destination ${destination.id} requires an absolute binaryPath`)
+    }
+    if (destination.write?.auth || destination.read?.auth) {
+      throw new Error(`Destination ${destination.id} authentication is not implemented yet`)
+    }
+    if ((destination.write?.enabled !== undefined && typeof destination.write.enabled !== 'boolean') ||
+        (destination.read?.enabled !== undefined && typeof destination.read.enabled !== 'boolean')) {
+      throw new Error(`Destination ${destination.id} read/write enabled flags must be boolean`)
+    }
+    if (destination.read?.limits !== undefined) {
+      if (!isObject(destination.read.limits) || Object.values(destination.read.limits).some(value => !Number.isSafeInteger(value) || value <= 0)) {
+        throw new Error(`Destination ${destination.id} has invalid History limits`)
+      }
     }
     if (destination.write?.enabled === true) {
       writers++
@@ -83,6 +95,8 @@ export function validateConfig(raw) {
   if (readers > 1) throw new Error('Only one VictoriaMetrics destination may serve History')
   if (enabled && writers === 0) throw new Error('Ingestion requires a write-enabled destination')
   if (enabled) {
+    vmagent.mode ??= 'managed-container'
+    vmagent.queueLimitBytesPerDestination ??= 1073741824
     if (!['host-binary', 'managed-container'].includes(vmagent.mode)) throw new Error('Invalid vmagent mode')
     if (vmagent.mode === 'host-binary' && !isAbsolutePath(vmagent.binaryPath)) {
       throw new Error('vmagent.binaryPath must be absolute')

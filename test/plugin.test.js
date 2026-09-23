@@ -6,29 +6,33 @@ function fakeApp() {
   const status = []
   return {
     app: {
+      selfId: 'urn:mrn:signalk:uuid:boat',
       setPluginStatus: value => status.push(value),
-      setPluginError: value => status.push(`error: ${value}`)
+      setPluginError: value => status.push(`error: ${value}`),
+      registerHistoryApiProvider: () => {},
+      unregisterHistoryApiProvider: () => {}
     },
     status
   }
 }
 
-test('inactive plugin starts without launching vmagent', () => {
+test('inactive plugin starts without launching vmagent', async () => {
   const { app, status } = fakeApp()
   const plugin = createPlugin(app)
   plugin.start({ ingest: { enabled: false }, destinations: [] })
-  assert.equal(status.at(-1), 'Ingestion disabled')
-  plugin.stop()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(status.at(-1), 'History provider ready')
+  await plugin.stop()
   assert.equal(status.at(-1), 'Stopped')
 })
 
-test('unfinished History and container modes fail explicitly', () => {
+test('unfinished host-binary VictoriaMetrics mode fails explicitly', () => {
   const { app } = fakeApp()
   const plugin = createPlugin(app)
   assert.throws(() => plugin.start({
     destinations: [{
-      id: 'vm', kind: 'victoriametrics', mode: 'remote',
-      read: { enabled: true, url: 'http://localhost:8428' }
+      id: 'vm', kind: 'victoriametrics', mode: 'host-binary', binaryPath: '/usr/bin/victoria-metrics',
+      read: { enabled: true }
     }]
-  }), /History reading is not implemented/)
+  }), /host-binary mode is not implemented/)
 })

@@ -26,6 +26,7 @@ export function encodeWriteRequest(samples) {
 
 export async function postSamples(url, samples, fetchImpl = fetch) {
   const body = encodeWriteRequest(samples)
+  if (body.byteLength > 8 * 1024 * 1024) throw new Error('Remote Write batch exceeds 8 MiB')
   const response = await fetchImpl(url, {
     method: 'POST',
     headers: {

@@ -22,6 +22,7 @@ export async function startHostVmagent(options, dataDir, onExit, fetchImpl = fet
   const args = [
     `-httpListenAddr=127.0.0.1:${port}`,
     `-remoteWrite.tmpDataPath=${queuePath}`,
+    '-remoteWrite.keepDanglingQueues',
     `-remoteWrite.maxDiskUsagePerURL=${options.vmagent.queueLimitBytesPerDestination}`,
     ...options.destinations.filter(destination => destination.write?.enabled)
       .map(destination => `-remoteWrite.url=${destination.write.url}`)

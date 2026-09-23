@@ -3,140 +3,200 @@ import { deltaToSamples } from './src/metrics.js'
 import { postSamples } from './src/remote-write.js'
 import { SampleBatcher } from './src/batch.js'
 import { startHostVmagent } from './src/host-vmagent.js'
+import { startManagedServices } from './src/managed.js'
+import { VictoriaMetricsHistory } from './src/history.js'
+import { schema } from './src/schema.js'
+import { parseVmagentStatus } from './src/vmagent-status.js'
 
 const id = 'signalk-victoriametrics-history-provider'
 
 export default function createPlugin(app) {
   let generation = 0
-  let runtime = null
+  let abortController = null
+  let agent = null
+  let managed = null
   let batcher = null
   let healthTimer = null
   let unsubscribes = []
-  let unhealthy = false
+  let historyRegistered = false
+  let agentFailed = false
+  let historyFailed = false
+  let lossError = false
+  let lastStatus = ''
+
+  function setStatus(message) {
+    if (message !== lastStatus) {
+      lastStatus = message
+      app.setPluginStatus(message)
+    }
+  }
 
   function setError(message) {
-    unhealthy = true
+    lastStatus = ''
     app.setPluginError(message)
   }
 
-  function stop() {
+  function setAgentError(message) {
+    agentFailed = true
+    setError(message)
+  }
+
+  async function cleanup(reportStopped) {
     generation++
+    abortController?.abort()
+    abortController = null
     for (const unsubscribe of unsubscribes) unsubscribe()
     unsubscribes = []
     if (healthTimer) clearInterval(healthTimer)
     healthTimer = null
     batcher?.stop()
     batcher = null
-    runtime?.stop()
-    runtime = null
-    unhealthy = false
-    app.setPluginStatus('Stopped')
+    if (historyRegistered) app.unregisterHistoryApiProvider()
+    historyRegistered = false
+    agent?.stop()
+    agent = null
+    const previous = managed
+    managed = null
+    if (previous) await previous.stop()
+    agentFailed = false
+    historyFailed = false
+    lossError = false
+    if (reportStopped) setStatus('Stopped')
   }
 
   function start(raw = {}) {
-    stop()
+    const previous = cleanup(false)
     const options = validateConfig(raw)
-    if (options.destinations.some(destination => destination.read?.enabled)) {
-      throw new Error('History reading is not implemented in this first increment')
+    const reader = options.destinations.find(destination => destination.read?.enabled)
+    if (options.destinations.some(destination => destination.mode === 'host-binary')) {
+      throw new Error('VictoriaMetrics host-binary mode is not implemented yet')
     }
-    if (options.destinations.some(destination => destination.mode !== 'remote')) {
-      throw new Error('Only remote destinations are implemented in this first increment')
-    }
-    if (options.vmagent.mode === 'managed-container') {
-      throw new Error('Managed containers are not implemented in this first increment')
-    }
-    if (!options.ingest.enabled) {
-      app.setPluginStatus('Ingestion disabled')
-      return
+    if (reader && typeof app.registerHistoryApiProvider !== 'function') {
+      throw new Error('This Signal K server does not support History provider plugins')
     }
     const current = ++generation
-    app.setPluginStatus('Starting vmagent')
-    void startHostVmagent(options, app.getDataDirPath(), error => {
-      if (current === generation) setError(error.message)
-    }).then(started => {
-      if (current !== generation) {
-        started.stop()
-        return
-      }
-      runtime = started
-      batcher = new SampleBatcher({
-        limits: options.ingest.batch,
-        send: async samples => {
-          await postSamples(started.url, samples)
-          if (unhealthy && current === generation) {
-            unhealthy = false
-            app.setPluginStatus('Ingesting preferred Signal K deltas')
-          }
-        },
-        onError: error => setError(error.message)
-      })
-      const selfContext = app.selfId.startsWith('vessels.') ? app.selfId : `vessels.${app.selfId}`
-      let bootstrapping = true
-      app.subscriptionmanager.subscribe({
-        context: options.ingest.contexts === 'self' ? 'vessels.self' : '*',
-        subscribe: [{ path: '*', policy: 'instant', minPeriod: options.ingest.minPeriodMs }],
-        sourcePolicy: 'preferred'
-      }, unsubscribes, error => setError(String(error)), delta => {
-        if (bootstrapping || current !== generation) return
-        batcher.add(deltaToSamples(delta, options.ingest, selfContext))
-      })
-      bootstrapping = false
-      healthTimer = setInterval(async () => {
-        try {
-          const response = await fetch(started.healthUrl, { signal: AbortSignal.timeout(2000) })
-          if (!response.ok) throw new Error('vmagent health check failed')
-          if (unhealthy && current === generation) {
-            unhealthy = false
-            app.setPluginStatus('Ingesting preferred Signal K deltas')
-          }
-        } catch {
-          if (current === generation) setError('vmagent is unavailable')
+    const controller = new AbortController()
+    abortController = controller
+    const selfContext = app.selfId.startsWith('vessels.') ? app.selfId : `vessels.${app.selfId}`
+
+    void (async () => {
+      await previous
+      if (current !== generation) return
+      const needManaged = options.destinations.some(destination => destination.mode === 'managed-container') ||
+        (options.ingest.enabled && options.vmagent.mode === 'managed-container')
+      if (needManaged) {
+        setStatus('Starting managed VictoriaMetrics services')
+        const started = await startManagedServices(app, options, controller.signal)
+        if (current !== generation) {
+          await started.stop()
+          return
         }
-      }, 5000)
-      app.setPluginStatus('Ingesting preferred Signal K deltas')
-    }).catch(error => {
-      if (current === generation) setError(error.message)
+        managed = started
+      }
+
+      if (reader) {
+        const readUrl = reader.mode === 'managed-container' ? managed.urls.get(reader.id) : reader.read.url
+        const history = new VictoriaMetricsHistory({
+          baseUrl: readUrl,
+          labels: options.ingest.labels,
+          limits: reader.read.limits,
+          selfContext
+        })
+        const guarded = Object.fromEntries(['getValues', 'getContexts', 'getPaths'].map(method => [method, async query => {
+          try {
+            const result = await history[method](query)
+            if (historyFailed && current === generation) {
+              historyFailed = false
+              if (!agentFailed && !lossError) setStatus(options.ingest.enabled ? 'Ingesting preferred Signal K deltas' : 'History provider ready')
+            }
+            return result
+          } catch (error) {
+            if (current === generation) {
+              historyFailed = true
+              setError(`History: ${error.message}`)
+            }
+            throw error
+          }
+        }]))
+        app.registerHistoryApiProvider(guarded)
+        historyRegistered = true
+      }
+
+      if (options.ingest.enabled) {
+        if (options.vmagent.mode === 'host-binary') {
+          const resolved = {
+            ...options,
+            destinations: options.destinations.map(destination => destination.write?.enabled && destination.mode === 'managed-container'
+              ? { ...destination, write: { ...destination.write, url: managed.writeUrls.get(destination.id) } }
+              : destination)
+          }
+          agent = await startHostVmagent(resolved, app.getDataDirPath(), error => {
+            if (current === generation) setAgentError(error.message)
+          })
+          if (current !== generation) {
+            agent.stop()
+            agent = null
+            return
+          }
+        }
+        const address = agent?.url ?? `${managed.urls.get('vmagent')}/api/v1/write`
+        const healthUrl = agent?.healthUrl ?? `${managed.urls.get('vmagent')}/metrics`
+        batcher = new SampleBatcher({
+          limits: options.ingest.batch,
+          send: async samples => {
+            await postSamples(address, samples)
+            if (agentFailed && !lossError && current === generation) {
+              agentFailed = false
+              if (!historyFailed) setStatus('Ingesting preferred Signal K deltas')
+            }
+          },
+          onError: error => { if (current === generation) setAgentError(error.message) }
+        })
+        let bootstrapping = true
+        app.subscriptionmanager.subscribe({
+          context: options.ingest.contexts === 'self' ? 'vessels.self' : '*',
+          subscribe: [{ path: '*', policy: 'instant', minPeriod: options.ingest.minPeriodMs }],
+          sourcePolicy: 'preferred'
+        }, unsubscribes, error => { if (current === generation) setAgentError(String(error)) }, delta => {
+          if (bootstrapping || current !== generation) return
+          batcher.add(deltaToSamples(delta, options.ingest, selfContext))
+        })
+        bootstrapping = false
+        healthTimer = setInterval(async () => {
+          try {
+            const response = await fetch(healthUrl, { signal: AbortSignal.timeout(2000) })
+            if (!response.ok) throw new Error('unhealthy')
+            const vm = parseVmagentStatus(await response.text())
+            if (vm.droppedSamples > 0 || batcher.dropped > 0) {
+              lossError = true
+              setError(`Data loss: plugin ${batcher.dropped} samples, vmagent ${vm.droppedSamples} samples`)
+              return
+            }
+            if (current === generation) {
+              agentFailed = false
+              if (!historyFailed && !lossError) setStatus(`Ingesting; vmagent queue ${vm.pendingBytes} bytes; push failures ${vm.pushFailures}`)
+            }
+          } catch {
+            if (current === generation) setAgentError('vmagent is unavailable')
+          }
+        }, 5000)
+      }
+      setStatus(options.ingest.enabled ? 'Ingesting preferred Signal K deltas' : 'History provider ready')
+    })().catch(async error => {
+      if (current === generation) {
+        setError(error.message)
+        await cleanup(false)
+        setError(error.message)
+      }
     })
   }
 
   return {
     id,
     name: 'VictoriaMetrics History Provider (experimental)',
-    description: 'First increment: preferred deltas to host vmagent Remote Write',
-    schema: {
-      type: 'object',
-      required: ['ingest', 'vmagent', 'destinations'],
-      properties: {
-        ingest: { type: 'object', properties: {
-          enabled: { type: 'boolean', default: false },
-          contexts: { type: 'string', enum: ['self', 'all'], default: 'self' },
-          filterMode: { type: 'string', enum: ['blacklist', 'whitelist'], default: 'blacklist' },
-          paths: { type: 'array', items: { type: 'string' }, default: [] },
-          minPeriodMs: { type: 'integer', minimum: 0, default: 0 },
-          labels: { type: 'object', additionalProperties: { type: 'string' }, default: {} },
-          batch: { type: 'object', properties: {
-            maxSamples: { type: 'integer', minimum: 1, default: 500 },
-            flushMs: { type: 'integer', minimum: 1, default: 200 },
-            maxPendingSamples: { type: 'integer', minimum: 1, default: 10000 }
-          } }
-        } },
-        vmagent: { type: 'object', properties: {
-          mode: { type: 'string', enum: ['host-binary'], default: 'host-binary' },
-          binaryPath: { type: 'string' },
-          queueLimitBytesPerDestination: { type: 'integer', minimum: 1, default: 1073741824 }
-        } },
-        destinations: { type: 'array', items: { type: 'object', properties: {
-          id: { type: 'string' },
-          kind: { type: 'string', enum: ['victoriametrics', 'prometheus-compatible'] },
-          mode: { type: 'string', enum: ['remote'], default: 'remote' },
-          write: { type: 'object', properties: {
-            enabled: { type: 'boolean', default: true },
-            url: { type: 'string' }
-          } }
-        } } }
-      }
-    },
+    description: 'Store preferred Signal K deltas in VictoriaMetrics and serve History',
+    schema,
     start,
-    stop
+    stop: () => cleanup(true)
   }
 }

@@ -4,6 +4,7 @@ import protobuf from 'protobufjs'
 import snappy from 'snappyjs'
 import { encodeWriteRequest, postSamples } from '../src/remote-write.js'
 import { SampleBatcher } from '../src/batch.js'
+import { parseVmagentStatus } from '../src/vmagent-status.js'
 
 const schema = protobuf.parse(`syntax = "proto3";
 message Label { string name = 1; string value = 2; }
@@ -45,4 +46,12 @@ test('batcher bounds pending samples and counts failed sends', async () => {
   assert.equal(batcher.dropped, 4)
   assert.deepEqual(errors, ['down'])
   batcher.stop()
+})
+
+test('aggregates vmagent queue and loss metrics', () => {
+  const status = parseVmagentStatus(`vmagent_remotewrite_pending_data_bytes{url="1:x"} 64
+vmagent_remotewrite_pending_data_bytes{url="2:y"} 32
+vmagent_remotewrite_samples_dropped_total{url="1:x"} 2
+vmagent_remotewrite_push_failures_total{url="2:y"} 3`)
+  assert.deepEqual(status, { pendingBytes: 96, droppedSamples: 2, pushFailures: 3, blockedQueues: 0 })
 })
