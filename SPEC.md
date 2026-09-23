@@ -1,8 +1,9 @@
 # signalk-victoriametrics-history-provider - specification technique
 
-Statut : specification pour revue, avant implementation. Le mot "doit" designe
-une exigence de la premiere version. Les exemples de configuration illustrent
-le contrat vise; ils ne sont pas encore une configuration executable.
+Statut : specification cible, implementation en cours. Le mot "doit" designe
+une exigence de la premiere version. Le support effectivement disponible et
+les limites provisoires sont documentes dans README.md. Les exemples de
+configuration illustrent le contrat vise; ils ne sont pas tous executables.
 
 ## 1. Objectif et perimetre
 
