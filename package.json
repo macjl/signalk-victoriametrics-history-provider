@@ -1,0 +1,20 @@
+{
+  "name": "signalk-victoriametrics-history-provider",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Signal K history provider backed by VictoriaMetrics",
+  "main": "index.js",
+  "keywords": ["signalk-node-server-plugin", "signalk-category-utility", "signalk", "history", "victoriametrics"],
+  "author": "Jean-Laurent Girod (@macjl)",
+  "license": "Apache-2.0",
+  "repository": { "type": "git", "url": "git+https://github.com/macjl/signalk-victoriametrics-history-provider.git" },
+  "signalk-plugin-enabled-by-default": false,
+  "engines": { "node": ">=22" },
+  "scripts": { "test": "node --test" },
+  "dependencies": {
+    "protobufjs": "^7.5.4",
+    "snappyjs": "^0.7.0"
+  },
+  "signalk": { "displayName": "VictoriaMetrics History Provider (experimental)" }
+}
