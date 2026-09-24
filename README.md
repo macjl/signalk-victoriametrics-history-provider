@@ -1,7 +1,7 @@
 # signalk-victoriametrics-history-provider
 
 Experimental first release for Signal K. The [technical specification](SPEC.md)
-describes the longer-term design; this README describes what version 0.1.0
+describes the longer-term design; this README describes what version 0.1.1
 actually supports.
 
 ## Installation
@@ -17,9 +17,10 @@ For a local setup, install and enable `signalk-container` first, then add a
 prompted. This starts one managed VictoriaMetrics and one vmagent; their data
 and vmagent's disk queue persist in the Signal K data directory.
 
-For an existing VictoriaMetrics, choose **Remote**, enter its full Remote Write
-endpoint (for example, `http://host:8428/api/v1/write`) and its History base URL
-(for example, `http://host:8428`). A Prometheus-compatible destination is
+For an existing VictoriaMetrics, choose **Remote** and enter only its base URL
+(for example, `http://host:8428`); the plugin adds the Remote Write and History
+API paths automatically. A Prometheus-compatible destination still requires
+the full Remote Write receiver URL and is
 write-only and must accept Prometheus Remote Write. Multiple write destinations
 are supported, but only one VictoriaMetrics destination can serve History.
 The plugin does not import data written by the old Prometheus exporter.
@@ -100,7 +101,7 @@ destination. The series use `job="signalk-vmagent"`, the vessel context, and an
 `instance` label from the saved plugin configuration.
 Read-only mode does not start vmagent and therefore has no self-scrape.
 
-For an external destination, select **Basic Auth** under its URLs and enter
+For an external destination, select **Basic Auth** under its URL and enter
 the username and password. Remote Write uses private credential files read by
 vmagent; History requests send an HTTP Basic Authorization header. The password
 is also stored in the Signal K plugin configuration, so access to that

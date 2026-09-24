@@ -262,8 +262,8 @@ export default function PluginConfigurationPanel({ configuration, save }) {
                 <option value="write">Write only</option>
               </select>}
             </Field>
-            {destination.write?.enabled && destination.mode === 'remote' && <Field label="Remote Write URL"><input style={styles.input} type="url" value={destination.write?.url ?? ''} onChange={event => updateDestinationPart(index, 'write', { url: event.target.value })} placeholder="https://host/api/v1/write" /></Field>}
-            {destination.read?.enabled && destination.mode === 'remote' && <Field label="History read URL"><input style={styles.input} type="url" value={destination.read?.url ?? ''} onChange={event => updateDestinationPart(index, 'read', { url: event.target.value })} placeholder="https://host:8428" /></Field>}
+            {destination.kind === 'victoriametrics' && destination.mode === 'remote' && <Field label="VictoriaMetrics base URL"><input style={styles.input} type="url" value={destination.url ?? ''} onChange={event => updateDestination(index, { url: event.target.value })} placeholder="https://host:8428" /></Field>}
+            {destination.kind === 'prometheus-compatible' && destination.mode === 'remote' && <Field label="Remote Write URL"><input style={styles.input} type="url" value={destination.write?.url ?? ''} onChange={event => updateDestinationPart(index, 'write', { url: event.target.value })} placeholder="https://host/api/v1/write" /></Field>}
             {destination.mode === 'remote' && <BasicAuthFields auth={destination.auth}
               onChange={auth => updateDestination(index, { auth })} />}
           </div>

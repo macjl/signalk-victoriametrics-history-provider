@@ -121,25 +121,36 @@ export function validateConfig(raw) {
         throw new Error(`Destination ${destination.id} has invalid History limits`)
       }
     }
+    const remoteVm = destination.kind === 'victoriametrics' && destination.mode === 'remote'
+    const baseUrl = remoteVm ? victoriaMetricsBaseUrl(destination.url) : null
+    if (remoteVm && !baseUrl) {
+      throw new Error(`Destination ${destination.id} requires a VictoriaMetrics base URL without a path`)
+    }
+    if (remoteVm && (destination.write?.url !== undefined || destination.read?.url !== undefined)) {
+      throw new Error(`Destination ${destination.id} must use url instead of read.url or write.url`)
+    }
     if (destination.write?.enabled === true) {
       writers++
-      if (destination.mode === 'remote' && !isHttpUrl(destination.write.url, true)) {
+      if (destination.kind === 'prometheus-compatible' && !isHttpUrl(destination.write.url, true)) {
         throw new Error(`Destination ${destination.id} requires a Remote Write URL`)
       }
     }
     if (destination.read?.enabled === true) {
       readers++
       if (destination.kind !== 'victoriametrics') throw new Error('Only VictoriaMetrics can serve History')
-      if (destination.mode === 'remote' && !isHttpUrl(destination.read.url)) {
-        throw new Error(`Destination ${destination.id} requires a read URL`)
-      }
     }
     if (destination.write?.enabled !== true && destination.read?.enabled !== true) {
       throw new Error(`Destination ${destination.id} must be used for writing, History, or both`)
     }
-    normalizedDestinations.push(destination.mode === 'managed-container'
-      ? { ...destination, retention: normalizeRetention(destination.retention, destination.id) }
-      : destination)
+    normalizedDestinations.push(remoteVm
+      ? {
+          ...destination, url: baseUrl,
+          write: { ...destination.write, url: `${baseUrl}/api/v1/write` },
+          read: { ...destination.read, url: baseUrl }
+        }
+      : destination.mode === 'managed-container'
+        ? { ...destination, retention: normalizeRetention(destination.retention, destination.id) }
+        : destination)
   }
   if (readers > 1) throw new Error('Only one VictoriaMetrics destination may serve History')
   const enabled = writers > 0
@@ -179,5 +190,17 @@ function isHttpUrl(value, requirePath = false) {
       (!requirePath || url.pathname !== '/')
   } catch {
     return false
+  }
+}
+
+function victoriaMetricsBaseUrl(value) {
+  if (typeof value !== 'string') return null
+  try {
+    const url = new URL(value)
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password ||
+        url.pathname !== '/' || url.search || url.hash) return null
+    return url.origin
+  } catch {
+    return null
   }
 }

@@ -52,7 +52,7 @@ test('remote read-only provider starts without vmagent or subscriptions', async 
     ingest: { enabled: true },
     destinations: [{
       id: 'remote', kind: 'victoriametrics', mode: 'remote',
-      read: { enabled: true, url: 'http://localhost:8428' }
+      url: 'http://localhost:8428', read: { enabled: true }
     }]
   })
   await new Promise(resolve => setImmediate(resolve))

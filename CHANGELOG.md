@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1
+
+- Configure a remote VictoriaMetrics with one base URL; derive its History and Remote Write endpoints automatically.
+- Existing remote VictoriaMetrics destinations must be reconfigured with the new base URL field after upgrading. The previous read/write URL fields are no longer accepted.
+
 ## 0.1.0
 
 First experimental release.

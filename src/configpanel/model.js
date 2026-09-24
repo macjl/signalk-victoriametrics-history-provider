@@ -100,7 +100,16 @@ export function prepareSave(configuration, labelRows) {
   if (!candidate.destinations.some(destination => destination.write?.enabled)) candidate.vmagent.exposeWebUi = false
   delete candidate.ingest.enabled
   delete candidate.vmagent.imageTag
-  for (const destination of candidate.destinations) delete destination.imageTag
+  for (const destination of candidate.destinations) {
+    delete destination.imageTag
+    if (destination.kind === 'victoriametrics' && destination.mode === 'remote') {
+      if (destination.write) delete destination.write.url
+      if (destination.read) delete destination.read.url
+    } else {
+      delete destination.url
+      if (destination.read) delete destination.read.url
+    }
+  }
   validateConfig(clone(candidate))
   return candidate
 }

@@ -9,8 +9,9 @@ const base = () => ({
   vmagent: { mode: 'host-binary', binaryPath: '/usr/bin/vmagent', queueLimitBytesPerDestination: 1024 },
   destinations: [{
     id: 'main', kind: 'victoriametrics', mode: 'remote',
-    write: { enabled: true, url: 'http://localhost:8428/api/v1/write' },
-    read: { enabled: true, url: 'http://localhost:8428' }
+    url: 'http://localhost:8428',
+    write: { enabled: true },
+    read: { enabled: true }
   }]
 })
 
@@ -82,7 +83,7 @@ test('allows only one History reader', () => {
   const options = base()
   options.destinations.push({
     id: 'second', kind: 'victoriametrics', mode: 'remote',
-    read: { enabled: true, url: 'http://localhost:8428' }
+    url: 'http://localhost:8428', read: { enabled: true }
   })
   assert.throws(() => validateConfig(options), /Only one VictoriaMetrics/)
 })
@@ -127,6 +128,8 @@ test('configuration schema does not expose derived ingestion or image versions',
   assert.equal(schema.properties.ingest.properties.enabled, undefined)
   assert.equal(schema.properties.vmagent.properties.imageTag, undefined)
   assert.equal(schema.properties.destinations.items.properties.imageTag, undefined)
+  assert.equal(schema.properties.destinations.items.properties.url.type, 'string')
+  assert.equal(schema.properties.destinations.items.properties.read.properties.url, undefined)
 })
 
 test('rejects empty whitelist and unsafe URL credentials', () => {
@@ -134,8 +137,48 @@ test('rejects empty whitelist and unsafe URL credentials', () => {
   options.ingest.filterMode = 'whitelist'
   assert.throws(() => validateConfig(options), /Whitelist cannot be empty/)
   options.ingest.paths = ['navigation']
-  options.destinations[0].write.url = 'http://user:secret@localhost:8428/api/v1/write'
-  assert.throws(() => validateConfig(options), /Remote Write URL/)
+  options.destinations[0].url = 'http://user:secret@localhost:8428'
+  assert.throws(() => validateConfig(options), /VictoriaMetrics base URL/)
+})
+
+test('derives VictoriaMetrics read and write endpoints from one base URL', () => {
+  const options = base()
+  options.destinations[0].url = 'https://vm.example:8428/'
+  const destination = validateConfig(options).destinations[0]
+  assert.equal(destination.url, 'https://vm.example:8428')
+  assert.equal(destination.write.url, 'https://vm.example:8428/api/v1/write')
+  assert.equal(destination.read.url, 'https://vm.example:8428')
+  assert.equal(options.destinations[0].write.url, undefined)
+  assert.equal(options.destinations[0].read.url, undefined)
+  options.destinations[0].write.enabled = false
+  assert.equal(validateConfig(options).destinations[0].read.url, 'https://vm.example:8428')
+  options.destinations[0].write.enabled = true
+  options.destinations[0].read.enabled = false
+  assert.equal(validateConfig(options).destinations[0].write.url, 'https://vm.example:8428/api/v1/write')
+})
+
+test('remote VictoriaMetrics accepts only a base URL, not endpoint URLs', () => {
+  const options = base()
+  for (const url of ['', 'https://vm.example/api/v1/write', 'https://vm.example/prefix',
+    'https://vm.example?tenant=1', 'https://vm.example#fragment']) {
+    options.destinations[0].url = url
+    assert.throws(() => validateConfig(options), /VictoriaMetrics base URL/)
+  }
+  options.destinations[0].url = 'https://vm.example'
+  options.destinations[0].read.url = 'https://vm.example'
+  assert.throws(() => validateConfig(options), /must use url instead/)
+  delete options.destinations[0].read.url
+  options.destinations[0].write.url = 'https://vm.example/api/v1/write'
+  assert.throws(() => validateConfig(options), /must use url instead/)
+})
+
+test('Prometheus-compatible write destinations retain their full receiver URL', () => {
+  const options = base()
+  options.destinations[0] = {
+    id: 'other', kind: 'prometheus-compatible', mode: 'remote',
+    write: { enabled: true, url: 'https://host.example/custom/write' }
+  }
+  assert.equal(validateConfig(options).destinations[0].write.url, 'https://host.example/custom/write')
 })
 
 test('accepts one Basic Auth credential pair for a remote destination', () => {

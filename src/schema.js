@@ -8,7 +8,6 @@ const read = {
   type: 'object',
   properties: {
     enabled: { type: 'boolean', default: false },
-    url: { type: 'string', title: 'VictoriaMetrics read URL' },
     limits: { type: 'object', properties: {
       maxRangeDays: { type: 'integer', minimum: 1, default: 30 },
       maxSeries: { type: 'integer', minimum: 1, default: 500 },
@@ -51,6 +50,7 @@ export const schema = {
       id: { type: 'string', pattern: '^[a-z0-9][a-z0-9-]*$' },
       kind: { type: 'string', enum: ['victoriametrics', 'prometheus-compatible'] },
       mode: { type: 'string', enum: ['managed-container', 'remote'] },
+      url: { type: 'string', title: 'VictoriaMetrics base URL' },
       exposeWebUi: { type: 'boolean', default: false },
       retention: { type: 'string', default: '30d' },
       auth,

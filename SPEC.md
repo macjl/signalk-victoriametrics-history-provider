@@ -77,10 +77,9 @@ necessaire. Mode ecriture seule autorise : aucune instance History en lecture.
       "kind": "victoriametrics",
       "mode": "managed-container",
       "retention": "30d",
-      "write": { "enabled": true, "url": "auto" },
+      "write": { "enabled": true },
       "read": {
         "enabled": true,
-        "url": "auto",
         "limits": {
           "maxRangeDays": 30,
           "maxSeries": 500,
@@ -94,9 +93,8 @@ necessaire. Mode ecriture seule autorise : aucune instance History en lecture.
 }
 ```
 
-La valeur `auto` est une intention de schema, pas une URL a transmettre telle
-quelle aux processus. L'interface devra afficher les URLs resolues, sans
-afficher les secrets. Les versions des images sont fixees dans le plugin.
+Les URLs des services geres sont resolues automatiquement, sans etre stockees
+dans la configuration. Les versions des images sont fixees dans le plugin.
 
 Pour utiliser des binaires deja installes au lieu des conteneurs, remplacer
 les blocs correspondants par exemple par :
@@ -115,15 +113,15 @@ les blocs correspondants par exemple par :
       "mode": "host-binary",
       "binaryPath": "/usr/bin/victoria-metrics",
       "retention": "30d",
-      "write": { "enabled": true, "url": "auto" },
-      "read": { "enabled": true, "url": "auto" }
+      "write": { "enabled": true },
+      "read": { "enabled": true }
     }
   ]
 }
 ```
 
 Les autres champs de la configuration restent inchanges. Une instance
-distante **deja lancee** reste `mode: "remote"` et demande des URLs; elle
+distante **deja lancee** reste `mode: "remote"` et demande son URL de base; elle
 n'est pas un binaire pilote par le plugin.
 
 ### 3.1 Ingestion
@@ -204,13 +202,17 @@ n'est pas un binaire pilote par le plugin.
   `host-binary` ou `remote`. Les deux premiers demarrent une instance
   VictoriaMetrics single-node pilotee par le plugin, depuis une image epinglee
   ou un `binaryPath` absolu fourni par l'utilisateur. `remote` designe une
-  instance deja demarree, avec ses URLs de lecture/ecriture. Une destination
+  instance deja demarree, avec une URL de base unique. Une destination
   `prometheus-compatible` est toujours `remote` et ne peut pas etre lue via
   ce provider History.
 - Chaque destination possede independamment `write.enabled`. Desactivee, elle
   ne figure pas dans les `-remoteWrite.url` de vmagent. Pour une destination
-  `remote`, renseigner l'URL complete du recepteur Remote Write, pas une simple
-  URL racine. Pour une VM geree, le plugin construit `/api/v1/write`.
+  `prometheus-compatible` distante, renseigner l'URL complete du recepteur
+  Remote Write. Pour une VictoriaMetrics `remote`, renseigner seulement
+  `destination.url` sous la forme `http(s)://hote[:port]`, sans chemin, requete
+  ou identifiants. Le plugin ajoute `/api/v1/write` pour l'ecriture et utilise
+  cette URL de base pour ses appels History. Une VM geree suit le meme contrat
+  d'API, avec une URL resolue automatiquement.
 - vmagent negocie automatiquement le protocole de sortie, y compris son
   repli vers Prometheus Remote Write pour les recepteurs non VictoriaMetrics.
   Aucun choix de protocole ni option `force*Proto` n'est expose en v1. Pour
@@ -250,11 +252,11 @@ n'est pas un binaire pilote par le plugin.
   qui en active deux est refusee a l'enregistrement **et** au demarrage. Pas
   de selection du "premier", pas de fallback implicite. Une destination en
   lecture peut avoir `write.enabled=false`.
-- `read.url` est l'URL de requete VictoriaMetrics (pour une VM geree, resolue
-  automatiquement). Une VM `remote` peut etre une instance single-node ou un
-  frontal `vmselect` compatible avec les endpoints documentes; son URL de
-  lecture peut differer de celle d'ecriture. En mode `host-binary`, le plugin
-  determine l'URL locale du processus qu'il demarre.
+- Pour une VM `remote`, la lecture History utilise `destination.url` et y
+  ajoute les chemins `/api/v1/export` et `/api/v1/label/...`. Les deux usages
+  partagent le meme hote. Un frontal VictoriaMetrics qui exige un prefixe de
+  chemin ou des hotes distincts pour la lecture et l'ecriture n'est pas pris
+  en charge par ce mode. En mode gere, le plugin determine l'URL locale.
 - `read.selectorLabels` est facultatif et reprend `ingest.labels` par defaut.
   Pour lire les donnees d'un **autre** producteur, l'utilisateur fournit un
   objet de labels correspondant a ce producteur. Les labels obligatoires

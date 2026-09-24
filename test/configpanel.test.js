@@ -30,8 +30,8 @@ test('initial configuration retains existing settings and fills missing defaults
 
 test('destination usage cannot be empty and History remains exclusive', () => {
   const destinations = [
-    { id: 'one', read: { enabled: true, url: 'http://one' } },
-    { id: 'two', write: { enabled: true }, read: { enabled: false, url: 'http://two' } }
+    { id: 'one', url: 'http://one', read: { enabled: true } },
+    { id: 'two', url: 'http://two', write: { enabled: true }, read: { enabled: false } }
   ]
   assert.equal(destinationUsage(destinations[0]), 'read')
   assert.throws(() => setDestinationUsage(destinations, 1, 'both'), /Only one destination/)
@@ -40,7 +40,7 @@ test('destination usage cannot be empty and History remains exclusive', () => {
   assert.equal(destinationUsage(changed[0]), 'write')
   const selected = setDestinationUsage(changed, 1, 'both')
   assert.equal(destinationUsage(selected[1]), 'both')
-  assert.equal(selected[1].read.url, 'http://two')
+  assert.equal(selected[1].url, 'http://two')
   assert.equal(destinations[0].read.enabled, true)
 })
 
@@ -115,7 +115,18 @@ test('switching a managed destination to remote clears its web UI exposure', () 
   assert.equal(selectMode(destination, 'remote').exposeWebUi, false)
   assert.equal(selectKind(destination, 'prometheus-compatible').exposeWebUi, false)
   const readOnly = initialConfig({ destinations: [{
-    id: 'remote', kind: 'victoriametrics', mode: 'remote', read: { enabled: true, url: 'http://localhost:8428' }
+    id: 'remote', kind: 'victoriametrics', mode: 'remote', url: 'http://localhost:8428', read: { enabled: true }
   }], vmagent: { exposeWebUi: true } })
   assert.equal(prepareSave(readOnly, []).vmagent.exposeWebUi, false)
+})
+
+test('saving a remote VictoriaMetrics destination keeps only its base URL', () => {
+  const config = initialConfig({ destinations: [{
+    id: 'remote', kind: 'victoriametrics', mode: 'remote', url: 'https://vm.example',
+    write: { enabled: true }, read: { enabled: true }
+  }] })
+  const saved = prepareSave(config, [])
+  assert.equal(saved.destinations[0].url, 'https://vm.example')
+  assert.deepEqual(saved.destinations[0].write, { enabled: true })
+  assert.deepEqual(saved.destinations[0].read, { enabled: true })
 })
