@@ -23,5 +23,7 @@ test('vmagent auth files follow writer order without exposing passwords in argum
   assert.ok(!args.join(' ').includes('secret'))
   assert.equal(await readFile(join(dataDir, 'vmagent-credentials', 'remote-username'), 'utf8'), 'writer')
   assert.equal(await readFile(join(dataDir, 'vmagent-credentials', 'remote-password'), 'utf8'), 'secret,with:punctuation')
-  assert.equal((await stat(join(dataDir, 'vmagent-credentials', 'remote-password'))).mode & 0o777, 0o600)
+  if (process.platform !== 'win32') {
+    assert.equal((await stat(join(dataDir, 'vmagent-credentials', 'remote-password'))).mode & 0o777, 0o600)
+  }
 })

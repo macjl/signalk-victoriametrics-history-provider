@@ -19,7 +19,7 @@ test('self-scrape is local, identified, and readable by the vmagent user', async
       instance: 'boat-1', fleet: 'test', signalk_context: 'vessels.boat'
     } }]
   }] })
-  assert.equal((await stat(source)).mode & 0o777, 0o600)
+  if (process.platform !== 'win32') assert.equal((await stat(source)).mode & 0o777, 0o600)
   assert.equal((await stat(source)).uid, (await stat(dataDir)).uid)
 })
 

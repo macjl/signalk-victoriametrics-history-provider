@@ -103,6 +103,8 @@ the username and password. Remote Write uses private credential files read by
 vmagent; History requests send an HTTP Basic Authorization header. The password
 is also stored in the Signal K plugin configuration, so access to that
 configuration must be restricted to administrators.
+On Windows, Unix file modes do not protect these files; restrict the Signal K
+data directory with Windows ACLs before configuring Basic Auth.
 
 For a managed VictoriaMetrics destination, an empty retention field requests
 no planned expiry. VictoriaMetrics has no truly unlimited retention, so the
