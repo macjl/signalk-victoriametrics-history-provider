@@ -1,9 +1,9 @@
 import { chmod, chown, stat, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, posix } from 'node:path'
 
 const CONFIG_FILE = 'vmagent-self-scrape.json'
 
-export async function writeSelfScrapeConfig(options, dataDir, agentDataDir, port, selfContext, pathPrefix = '') {
+export async function writeSelfScrapeConfig(options, dataDir, agentDataDir, port, selfContext, pathPrefix = '', containerPaths = false) {
   const labels = Object.fromEntries(Object.entries(options.ingest.labels).filter(([name]) => name !== 'job'))
   labels.instance ??= selfContext
   labels.signalk_context = selfContext
@@ -23,5 +23,5 @@ export async function writeSelfScrapeConfig(options, dataDir, agentDataDir, port
   if (written.uid !== owner.uid || written.gid !== owner.gid) {
     throw new Error('vmagent self-scrape configuration owner could not be set')
   }
-  return join(agentDataDir, CONFIG_FILE)
+  return (containerPaths ? posix.join : join)(agentDataDir, CONFIG_FILE)
 }

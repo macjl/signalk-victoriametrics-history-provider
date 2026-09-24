@@ -1,7 +1,7 @@
 import { chmod, chown, mkdir, stat, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, posix } from 'node:path'
 
-export async function remoteWriteAuthArgs(destinations, dataDir, agentDataDir) {
+export async function remoteWriteAuthArgs(destinations, dataDir, agentDataDir, containerPaths = false) {
   const writers = destinations.filter(destination => destination.write?.enabled)
   if (!writers.some(destination => destination.auth?.type === 'basic')) return []
 
@@ -35,8 +35,9 @@ export async function remoteWriteAuthArgs(destinations, dataDir, agentDataDir) {
         throw new Error(`vmagent credentials owner could not be set for ${destination.id}`)
       }
     }
-    usernameFiles.push(join(agentDataDir, 'vmagent-credentials', paths[0]))
-    passwordFiles.push(join(agentDataDir, 'vmagent-credentials', paths[1]))
+    const agentJoin = containerPaths ? posix.join : join
+    usernameFiles.push(agentJoin(agentDataDir, 'vmagent-credentials', paths[0]))
+    passwordFiles.push(agentJoin(agentDataDir, 'vmagent-credentials', paths[1]))
   }
   return [
     ...usernameFiles.map(path => `-remoteWrite.basicAuth.usernameFile=${path}`),

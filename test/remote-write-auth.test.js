@@ -13,7 +13,7 @@ test('vmagent auth files follow writer order without exposing passwords in argum
     { id: 'remote', auth: { type: 'basic', username: 'writer', password: 'secret,with:punctuation' }, write: { enabled: true } },
     { id: 'unused', auth: { type: 'basic', username: 'unused', password: 'not-used' }, write: { enabled: false } }
   ]
-  const args = await remoteWriteAuthArgs(destinations, dataDir, '/data')
+  const args = await remoteWriteAuthArgs(destinations, dataDir, '/data', true)
   assert.deepEqual(args, [
     '-remoteWrite.basicAuth.usernameFile=',
     '-remoteWrite.basicAuth.usernameFile=/data/vmagent-credentials/remote-username',

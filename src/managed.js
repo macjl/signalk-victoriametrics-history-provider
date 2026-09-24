@@ -1,5 +1,5 @@
 import { mkdir } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, posix } from 'node:path'
 import { ManagedContainer, resolveMount, waitForContainerManager } from 'signalk-container-helper'
 import { remoteWriteAuthArgs } from './remote-write-auth.js'
 import { writeSelfScrapeConfig } from './vmagent-self-scrape.js'
@@ -53,7 +53,7 @@ export async function startManagedServices(app, options, signal, selfContext) {
           command: [
             '-httpListenAddr=:8428',
             ...(prefix ? [`-http.pathPrefix=${prefix}`] : []),
-            `-storageDataPath=${join(mount.containerPath, directory)}`,
+            `-storageDataPath=${posix.join(mount.containerPath, directory)}`,
             `-retentionPeriod=${destination.retention ?? '30d'}`
           ],
           restart: 'unless-stopped'
@@ -81,8 +81,8 @@ export async function startManagedServices(app, options, signal, selfContext) {
           ? writeUrls.get(destination.id)
           : destination.write.url
       )
-      const authArgs = await remoteWriteAuthArgs(options.destinations, dataDir, mount.containerPath)
-      const scrapeConfig = await writeSelfScrapeConfig(options, dataDir, mount.containerPath, 8429, selfContext, prefix)
+      const authArgs = await remoteWriteAuthArgs(options.destinations, dataDir, mount.containerPath, true)
+      const scrapeConfig = await writeSelfScrapeConfig(options, dataDir, mount.containerPath, 8429, selfContext, prefix, true)
       agent = new ManagedContainer({
         app,
         pluginId: 'signalk-victoriametrics-history-provider',
@@ -96,7 +96,7 @@ export async function startManagedServices(app, options, signal, selfContext) {
           command: [
             '-httpListenAddr=:8429',
             ...(prefix ? [`-http.pathPrefix=${prefix}`] : []),
-            `-remoteWrite.tmpDataPath=${join(mount.containerPath, 'vmagent-queue')}`,
+            `-remoteWrite.tmpDataPath=${posix.join(mount.containerPath, 'vmagent-queue')}`,
             '-remoteWrite.keepDanglingQueues',
             `-promscrape.config=${scrapeConfig}`,
             `-remoteWrite.maxDiskUsagePerURL=${options.vmagent.queueLimitBytesPerDestination}`,

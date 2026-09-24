@@ -9,7 +9,7 @@ test('self-scrape is local, identified, and readable by the vmagent user', async
   const dataDir = await mkdtemp(join(tmpdir(), 'vmagent-scrape-'))
   t.after(() => rm(dataDir, { recursive: true, force: true }))
   const options = { ingest: { labels: { job: 'signalk', instance: 'boat-1', fleet: 'test' } } }
-  const path = await writeSelfScrapeConfig(options, dataDir, '/data', 8429, 'vessels.boat')
+  const path = await writeSelfScrapeConfig(options, dataDir, '/data', 8429, 'vessels.boat', '', true)
   assert.equal(path, '/data/vmagent-self-scrape.json')
   const source = join(dataDir, 'vmagent-self-scrape.json')
   const config = JSON.parse(await readFile(source, 'utf8'))
