@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { VictoriaMetricsHistory } from '../src/history.js'
+import { deltaToSamples } from '../src/metrics.js'
 
 const from = '2026-09-23T12:00:00.000Z'
 const to = '2026-09-23T12:00:03.000Z'
@@ -13,10 +14,37 @@ function provider(rows, onUrl = () => {}) {
     labels: { instance: 'boat-1' },
     fetchImpl: async url => {
       onUrl(new URL(url))
+      const label = new URL(url).pathname.match(/\/label\/(context|signalk_path)\/values$/)?.[1]
+      if (label) return new Response(JSON.stringify({ status: 'success', data: [...new Set(rows.map(row => row.metric[label]).filter(Boolean))] }))
       return new Response(rows.map(row => JSON.stringify(row)).join('\n') + '\n')
     }
   })
 }
+
+function exportRows(samples) {
+  const rows = new Map()
+  for (const sample of samples) {
+    const key = JSON.stringify(sample.labels)
+    if (!rows.has(key)) rows.set(key, { metric: sample.labels, values: [], timestamps: [] })
+    rows.get(key).values.push(sample.value)
+    rows.get(key).timestamps.push(sample.timestamp)
+  }
+  return [...rows.values()]
+}
+
+test('uses destination Basic Auth on History requests', async () => {
+  let headers
+  const history = new VictoriaMetricsHistory({
+    baseUrl: 'https://example.test', selfContext: 'vessels.boat',
+    auth: { type: 'basic', username: 'reader', password: 's:ecret' },
+    fetchImpl: async (_url, options) => {
+      headers = options.headers
+      return new Response(JSON.stringify({ status: 'success', data: [] }), { status: 200 })
+    }
+  })
+  await history.getPaths({ from, to })
+  assert.equal(headers.Authorization, `Basic ${Buffer.from('reader:s:ecret').toString('base64')}`)
+})
 
 test('reads raw values across source changes and filters by historical source', async () => {
   const rows = [
@@ -29,6 +57,7 @@ test('reads raw values across source changes and filters by historical source', 
   assert.deepEqual(result.data, [
     [from, 1], ['2026-09-23T12:00:01.000Z', 2]
   ])
+  assert.equal(result.values[0].method, 'average')
   assert.match(selector, /preferred="true"/)
   assert.match(selector, /instance="boat-1"/)
   await history.getValues({ from, to, pathSpecs: [{ path: 'navigation.speedOverGround', sourceRef: 'a' }] })
@@ -52,6 +81,15 @@ test('resolution buckets samples and rejects all-sources request', async () => {
   await assert.rejects(history.getValues({ from, to, sourcePolicy: 'all', pathSpecs: [{ path: 'navigation.speedOverGround' }] }), /unavailable/)
 })
 
+test('averages common Signal K angle paths across zero', async () => {
+  const history = provider([{ metric: { source: 'compass' }, values: [6.2, 0.08], timestamps: [t, t + 1000] }])
+  for (const path of ['navigation.headingMagnetic', 'navigation.headingTrue', 'navigation.courseOverGroundTrue']) {
+    const result = await history.getValues({ from, to, resolution: 2, pathSpecs: [{ path, aggregate: 'average' }] })
+    const angle = result.data[0][1]
+    assert.ok(Math.min(angle, 2 * Math.PI - angle) < 0.1, `${path}: ${angle}`)
+  }
+})
+
 test('same-timestamp sources use the lexically first source', async () => {
   const history = provider([
     { metric: { source: 'z' }, values: [100], timestamps: [t] },
@@ -61,8 +99,112 @@ test('same-timestamp sources use the lexically first source', async () => {
   assert.deepEqual(result.data, [[from, 2]])
 })
 
+test('reads existing string states and resolves default average to last', async () => {
+  const history = provider([
+    { metric: { source: 'autostate', value_str: 'moored' }, values: [1], timestamps: [t] },
+    { metric: { source: 'autostate', value_str: 'sailing' }, values: [1], timestamps: [t + 1000] }
+  ])
+  const path = 'navigation.state'
+  const raw = await history.getValues({ from, to, pathSpecs: [{ path, aggregate: 'average' }] })
+  assert.deepEqual(raw.data, [[from, 'moored'], ['2026-09-23T12:00:01.000Z', 'sailing']])
+  assert.equal(raw.values[0].method, 'last')
+  const last = await history.getValues({ from, to, resolution: 2, pathSpecs: [{ path, aggregate: 'last' }] })
+  assert.deepEqual(last.data, [[from, 'sailing']])
+  const grouped = await history.getValues({ from, to, resolution: 2, pathSpecs: [{ path, aggregate: 'average' }] })
+  assert.deepEqual(grouped.data, [[from, 'sailing']])
+  assert.equal(grouped.values[0].method, 'last')
+  await assert.rejects(history.getValues({ from, to, pathSpecs: [{ path, aggregate: 'min' }] }), /min requires numeric values/)
+})
+
+test('reconstructs existing JSON leaves by timestamp and source', async () => {
+  const path = 'navigation.shore.closestPoint'
+  const history = provider([
+    { metric: { source: 'shore', signalk_leaf: `${path}.latitude` }, values: [48, 49], timestamps: [t, t + 1000] },
+    { metric: { source: 'shore', signalk_leaf: `${path}.longitude` }, values: [-4, -5], timestamps: [t, t + 1000] },
+    { metric: { source: 'z-other', signalk_leaf: `${path}.latitude` }, values: [50], timestamps: [t] }
+  ])
+  const raw = await history.getValues({ from, to, pathSpecs: [{ path, aggregate: 'average' }] })
+  assert.deepEqual(raw.data, [
+    [from, { latitude: 48, longitude: -4 }],
+    ['2026-09-23T12:00:01.000Z', { latitude: 49, longitude: -5 }]
+  ])
+  const last = await history.getValues({ from, to, resolution: 2, pathSpecs: [{ path, aggregate: 'last' }] })
+  assert.deepEqual(last.data, [[from, { latitude: 49, longitude: -5 }]])
+  const grouped = await history.getValues({ from, to, resolution: 2, pathSpecs: [{ path, aggregate: 'average' }] })
+  assert.deepEqual(grouped.data, [[from, { latitude: 49, longitude: -5 }]])
+  assert.equal(grouped.values[0].method, 'last')
+})
+
+test('round-trips nested JSON, arrays, booleans, dates and null leaves', async () => {
+  const path = 'navigation.details'
+  const value = { 'part.name': { active: true, tags: ['sailing', null, ''] }, empty: {}, emptyList: [], since: '2026-09-23T12:00:00.000Z' }
+  const samples = deltaToSamples({ context: 'vessels.self', updates: [{ $source: 'sensor', timestamp: from, values: [{ path, value }] }] },
+    { contexts: 'self', filterMode: 'blacklist', paths: [], labels: {} }, 'vessels.boat')
+  assert.ok(samples.some(sample => sample.labels.signalk_leaf_parts))
+  const history = provider(exportRows(samples))
+  const result = await history.getValues({ from, to, pathSpecs: [{ path }] })
+  assert.deepEqual(result.data, [[from, value]])
+})
+
+test('aligns numeric and object columns without mixing their leaves', async () => {
+  const path = 'navigation.shore.closestPoint'
+  const objectRows = [
+    { metric: { source: 'shore', signalk_leaf: `${path}.longitude` }, values: [-4], timestamps: [t] },
+    { metric: { source: 'shore', signalk_leaf: `${path}.latitude` }, values: [48], timestamps: [t] }
+  ]
+  const numericRows = [
+    { metric: { source: 'gps' }, values: [3], timestamps: [t + 1000] }
+  ]
+  const history = new VictoriaMetricsHistory({
+    baseUrl: 'http://localhost:8428', selfContext: 'vessels.boat',
+    fetchImpl: async url => {
+      const selectedPath = new URL(url).searchParams.get('match[]').includes(`signalk_path="${path}"`)
+      const rows = selectedPath ? objectRows : numericRows
+      return new Response(rows.map(row => JSON.stringify(row)).join('\n') + '\n')
+    }
+  })
+  const result = await history.getValues({ from, to, pathSpecs: [
+    { path, aggregate: 'first' }, { path: 'navigation.speedOverGround', aggregate: 'average' }
+  ] })
+  assert.deepEqual(result.data, [
+    [from, { longitude: -4, latitude: 48 }, null],
+    ['2026-09-23T12:00:01.000Z', null, 3]
+  ])
+})
+
 test('lists contexts and paths within requested period', async () => {
-  const history = provider([{ metric: { context: 'vessels.boat', signalk_path: 'navigation.position' }, values: [1], timestamps: [t] }])
+  const requested = []
+  const history = provider([{ metric: { context: 'vessels.boat', signalk_path: 'navigation.position' }, values: [1], timestamps: [t] }], url => requested.push(url))
   assert.deepEqual(await history.getContexts({ from, to }), ['vessels.boat'])
   assert.deepEqual(await history.getPaths({ from, to }), ['navigation.position'])
+  assert.ok(requested.every(url => url.pathname.includes('/label/') && url.searchParams.get('limit') === '501'))
+  assert.ok(requested.every(url => url.searchParams.get('match[]').includes('instance="boat-1"')))
+})
+
+test('rejects truncated History label discovery', async () => {
+  const history = new VictoriaMetricsHistory({
+    baseUrl: 'http://localhost:8428', selfContext: 'vessels.boat', limits: { maxSeries: 1 },
+    fetchImpl: async () => new Response(JSON.stringify({ status: 'success', data: ['one', 'two'] }))
+  })
+  await assert.rejects(history.getPaths({ from, to }), /signalk_path discovery limit exceeded: 2 > 1/)
+})
+
+test('identifies the History limit exceeded for a path', async () => {
+  const path = 'navigation.speedOverGround'
+  const query = { from, to, pathSpecs: [{ path }] }
+  for (const [rows, limits, expected] of [
+    [[
+      { metric: { source: 'a' }, values: [1], timestamps: [t] },
+      { metric: { source: 'b' }, values: [2], timestamps: [t] }
+    ], { maxSeries: 1 }, `History series limit exceeded for ${path}: 2 > 1`],
+    [[
+      { metric: { source: 'a' }, values: [1, 2], timestamps: [t, t + 1000] }
+    ], { maxSamples: 1 }, `History sample limit exceeded for ${path}: 2 > 1`]
+  ]) {
+    const history = new VictoriaMetricsHistory({
+      baseUrl: 'http://localhost:8428', selfContext: 'vessels.boat', limits,
+      fetchImpl: async () => new Response(rows.map(row => JSON.stringify(row)).join('\n'))
+    })
+    await assert.rejects(history.getValues(query), { message: expected })
+  }
 })

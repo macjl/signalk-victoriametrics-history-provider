@@ -1,13 +1,21 @@
 {
   "name": "signalk-victoriametrics-history-provider",
-  "version": "0.0.4",
-  "private": true,
+  "version": "0.1.0",
   "type": "module",
   "description": "Signal K history provider backed by VictoriaMetrics",
   "main": "index.js",
-  "files": ["index.js", "src", "README.md", "SPEC.md"],
+  "files": [
+    "index.js",
+    "src",
+    "public",
+    "README.md",
+    "CHANGELOG.md",
+    "SPEC.md"
+  ],
   "keywords": [
     "signalk-node-server-plugin",
+    "signalk-plugin-configurator",
+    "signalk-webapp",
     "signalk-category-utility",
     "signalk",
     "history",
@@ -19,11 +27,15 @@
     "type": "git",
     "url": "git+https://github.com/macjl/signalk-victoriametrics-history-provider.git"
   },
+  "homepage": "https://github.com/macjl/signalk-victoriametrics-history-provider#readme",
+  "bugs": "https://github.com/macjl/signalk-victoriametrics-history-provider/issues",
   "signalk-plugin-enabled-by-default": false,
   "engines": {
     "node": ">=22"
   },
   "scripts": {
+    "build": "webpack --config webpack.config.cjs",
+    "prepack": "npm run build",
     "test": "node --test"
   },
   "dependencies": {
@@ -32,7 +44,16 @@
     "snappyjs": "^0.7.0"
   },
   "signalk": {
-    "displayName": "VictoriaMetrics History Provider (experimental)",
-    "requires": ["signalk-container"]
+    "displayName": "VictoriaMetrics History Provider (experimental)"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.29.7",
+    "@babel/preset-react": "^7.29.7",
+    "babel-loader": "^10.1.1",
+    "lucide-react": "^1.47.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "webpack": "^5.111.1",
+    "webpack-cli": "^7.2.3"
   }
 }

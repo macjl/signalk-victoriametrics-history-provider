@@ -1,9 +1,31 @@
 const reservedLabels = new Set([
   '__name__', 'context', 'source', 'signalk_path', 'signalk_leaf',
-  'preferred', 'value_str'
+  'signalk_leaf_parts', 'signalk_value_type', 'preferred', 'value_str'
 ])
 
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value)
+
+function validateAuth(auth, destination) {
+  if (auth === undefined) return
+  if (destination.mode !== 'remote' ||
+      !isObject(auth) || auth.type !== 'basic' ||
+      typeof auth.username !== 'string' || !auth.username || /[:\r\n\0]/.test(auth.username) ||
+      typeof auth.password !== 'string' || !auth.password || /[\r\n\0]/.test(auth.password)) {
+    throw new Error(`Destination ${destination.id} has invalid Basic Auth credentials`)
+  }
+}
+
+export function normalizeRetention(value, id) {
+  if (value == null) return '30d'
+  if (typeof value === 'string' && value.trim() === '') return '100y'
+  if (typeof value !== 'string') throw new Error(`Destination ${id} has invalid retention period`)
+  const match = /^(\d+(?:\.\d+)?)(h|d|w|M|y)?$/.exec(value.trim())
+  if (!match) throw new Error(`Destination ${id} has invalid retention period`)
+  const daysPerUnit = { h: 1 / 24, d: 1, w: 7, M: 31, y: 365 }
+  const days = Number(match[1]) * daysPerUnit[match[2] ?? 'M']
+  if (!Number.isFinite(days) || days < 1) throw new Error(`Destination ${id} retention must be at least 1d`)
+  return value.trim()
+}
 
 export function validateConfig(raw) {
   if (!isObject(raw)) throw new Error('Configuration must be an object')
@@ -24,6 +46,9 @@ export function validateConfig(raw) {
       throw new Error(`Label ${name} must be a non-empty string`)
     }
   }
+  for (const name of ['job', 'instance']) {
+    if (!Object.hasOwn(labels, name)) throw new Error(`Label ${name} is required`)
+  }
 
   const contexts = ingest.contexts ?? 'self'
   const filterMode = ingest.filterMode ?? 'blacklist'
@@ -35,20 +60,34 @@ export function validateConfig(raw) {
   }
   if (filterMode === 'whitelist' && paths.length === 0) throw new Error('Whitelist cannot be empty')
 
-  const enabled = ingest.enabled ?? false
-  if (typeof enabled !== 'boolean') throw new Error('ingest.enabled must be boolean')
-  const minPeriodMs = ingest.minPeriodMs ?? 0
+  const minPeriodMs = ingest.minPeriodMs ?? 5000
   if (!Number.isSafeInteger(minPeriodMs) || minPeriodMs < 0) throw new Error('Invalid ingest.minPeriodMs')
 
   const batch = {
     maxSamples: ingest.batch?.maxSamples ?? 500,
-    flushMs: ingest.batch?.flushMs ?? 200,
+    flushMs: ingest.batch?.flushMs ?? 1000,
     maxPendingSamples: ingest.batch?.maxPendingSamples ?? 10000
   }
   if (Object.values(batch).some(value => !Number.isSafeInteger(value) || value <= 0) ||
       batch.maxPendingSamples < batch.maxSamples) throw new Error('Invalid ingest.batch limits')
 
+  const cardinalityAlert = {
+    maxSeriesPerPathPerDay: ingest.cardinalityAlert?.maxSeriesPerPathPerDay ?? 100,
+    excludedPaths: ingest.cardinalityAlert?.excludedPaths ?? []
+  }
+  if (ingest.cardinalityAlert !== undefined && !isObject(ingest.cardinalityAlert)) {
+    throw new Error('ingest.cardinalityAlert must be an object')
+  }
+  if (!Number.isSafeInteger(cardinalityAlert.maxSeriesPerPathPerDay) ||
+      cardinalityAlert.maxSeriesPerPathPerDay < 2 ||
+      cardinalityAlert.maxSeriesPerPathPerDay > 250 ||
+      !Array.isArray(cardinalityAlert.excludedPaths) ||
+      cardinalityAlert.excludedPaths.some(path => typeof path !== 'string' || !path.trim())) {
+    throw new Error('Invalid ingest.cardinalityAlert configuration')
+  }
+
   const ids = new Set()
+  const normalizedDestinations = []
   let readers = 0
   let writers = 0
   for (const destination of destinations) {
@@ -66,9 +105,13 @@ export function validateConfig(raw) {
     if (destination.mode === 'host-binary' && !isAbsolutePath(destination.binaryPath)) {
       throw new Error(`Destination ${destination.id} requires an absolute binaryPath`)
     }
-    if (destination.write?.auth || destination.read?.auth) {
-      throw new Error(`Destination ${destination.id} authentication is not implemented yet`)
+    if (destination.exposeWebUi !== undefined && typeof destination.exposeWebUi !== 'boolean') {
+      throw new Error(`Destination ${destination.id} exposeWebUi must be boolean`)
     }
+    if (destination.exposeWebUi && destination.mode !== 'managed-container') {
+      throw new Error(`Only managed VictoriaMetrics destinations can expose a web UI: ${destination.id}`)
+    }
+    validateAuth(destination.auth, destination)
     if ((destination.write?.enabled !== undefined && typeof destination.write.enabled !== 'boolean') ||
         (destination.read?.enabled !== undefined && typeof destination.read.enabled !== 'boolean')) {
       throw new Error(`Destination ${destination.id} read/write enabled flags must be boolean`)
@@ -91,9 +134,15 @@ export function validateConfig(raw) {
         throw new Error(`Destination ${destination.id} requires a read URL`)
       }
     }
+    if (destination.write?.enabled !== true && destination.read?.enabled !== true) {
+      throw new Error(`Destination ${destination.id} must be used for writing, History, or both`)
+    }
+    normalizedDestinations.push(destination.mode === 'managed-container'
+      ? { ...destination, retention: normalizeRetention(destination.retention, destination.id) }
+      : destination)
   }
   if (readers > 1) throw new Error('Only one VictoriaMetrics destination may serve History')
-  if (enabled && writers === 0) throw new Error('Ingestion requires a write-enabled destination')
+  const enabled = writers > 0
   if (enabled) {
     vmagent.mode ??= 'managed-container'
     vmagent.queueLimitBytesPerDestination ??= 1073741824
@@ -105,10 +154,16 @@ export function validateConfig(raw) {
       throw new Error('vmagent.queueLimitBytesPerDestination must be positive')
     }
   }
+  if (vmagent.exposeWebUi !== undefined && typeof vmagent.exposeWebUi !== 'boolean') {
+    throw new Error('vmagent.exposeWebUi must be boolean')
+  }
+  if (vmagent.exposeWebUi && !enabled) {
+    throw new Error('vmagent web UI requires an active write destination')
+  }
   return {
-    ingest: { enabled, contexts, filterMode, paths, minPeriodMs, labels, batch },
+    ingest: { enabled, contexts, filterMode, paths, minPeriodMs, labels, batch, cardinalityAlert },
     vmagent,
-    destinations
+    destinations: normalizedDestinations
   }
 }
 

@@ -48,8 +48,9 @@ necessaire. Mode ecriture seule autorise : aucune instance History en lecture.
   distribuer les mesures. Le plugin n'implemente pas Remote Write vers chaque
   destination lui-meme.
 - Les images vmagent et VictoriaMetrics sont epinglees a des versions publiees,
-  pas a `latest`. Verifier la disponibilite de l'architecture cible, notamment
-  ARM 32 bits/Cerbo GX, avant de proposer le mode conteneur gere.
+  pas a `latest`. Les versions sont fixees par chaque version du plugin et ne
+  sont pas configurables. Verifier la disponibilite de l'architecture cible,
+  notamment ARM 32 bits/Cerbo GX, avant de proposer le mode conteneur gere.
 - L'encodage Prometheus Remote Write v1 utilise des dependances protobuf et
   Snappy eprouvees; pas de codec maison. OTLP et Remote Write v2 sont hors v1.
 
@@ -58,17 +59,16 @@ necessaire. Mode ecriture seule autorise : aucune instance History en lecture.
 ```json
 {
   "ingest": {
-    "enabled": true,
     "contexts": "self",
     "filterMode": "blacklist",
     "paths": [],
-    "minPeriodMs": 0,
-    "labels": {},
-    "batch": { "maxSamples": 500, "flushMs": 200, "maxPendingSamples": 10000 }
+    "minPeriodMs": 5000,
+    "labels": { "job": "signalk-victoriametrics", "instance": "signalk-victoriametrics-<random-hex>" },
+    "batch": { "maxSamples": 500, "flushMs": 1000, "maxPendingSamples": 10000 },
+    "cardinalityAlert": { "maxSeriesPerPathPerDay": 100, "excludedPaths": [] }
   },
   "vmagent": {
     "mode": "managed-container",
-    "imageTag": "<version-verifiee>",
     "queueLimitBytesPerDestination": 1073741824
   },
   "destinations": [
@@ -76,7 +76,6 @@ necessaire. Mode ecriture seule autorise : aucune instance History en lecture.
       "id": "local",
       "kind": "victoriametrics",
       "mode": "managed-container",
-      "imageTag": "<version-verifiee>",
       "retention": "30d",
       "write": { "enabled": true, "url": "auto" },
       "read": {
@@ -95,9 +94,9 @@ necessaire. Mode ecriture seule autorise : aucune instance History en lecture.
 }
 ```
 
-Les valeurs `auto` et `<version-verifiee>` sont des intentions de schema, pas
-des valeurs a transmettre telles quelles aux processus. L'interface devra
-afficher les URLs resolues, sans afficher les secrets.
+La valeur `auto` est une intention de schema, pas une URL a transmettre telle
+quelle aux processus. L'interface devra afficher les URLs resolues, sans
+afficher les secrets. Les versions des images sont fixees dans le plugin.
 
 Pour utiliser des binaires deja installes au lieu des conteneurs, remplacer
 les blocs correspondants par exemple par :
@@ -129,6 +128,9 @@ n'est pas un binaire pilote par le plugin.
 
 ### 3.1 Ingestion
 
+- L'ingestion est active des qu'au moins une destination a `write.enabled=true`.
+  `ingest.enabled` n'est ni affiche ni pris en compte. Une ancienne valeur
+  enregistree est ignoree puis retiree lors du prochain enregistrement.
 - `contexts`: `self` (defaut) ou `all`. `self` ne prend que le bateau local;
   `all` inclut les autres contextes Signal K. `vessels.self` est remplace par
   le contexte canonique `vessels.<selfId>` avant stockage.
@@ -136,18 +138,23 @@ n'est pas un binaire pilote par le plugin.
   chemins **Signal K d'origine** avant normalisation en nom de metrique. Une
   liste blanche vide est invalide. Les chemins racines d'objets autorisent
   leurs sous-champs; un champ exclu ne doit pas etre emis par accident.
-- `minPeriodMs=0` signifie ne pas demander de reduction de frequence a Signal K.
-  Une valeur positive utilise le `minPeriod` de la souscription et peut perdre
-  des etats intermediaires. Le batch HTTP reste necessaire : le reglage de
-  souscription ne regroupe pas les mesures de toutes les series en un seul POST.
-- `labels`: labels statiques supplementaires, definis uniquement par
-  l'utilisateur; objet vide par defaut. `job` et `instance` ne sont ni imposes
-  ni pre-remplis : l'utilisateur peut les ajouter pour retrouver son ancienne
-  organisation Prometheus. Quand plusieurs Signal K ecrivent dans un meme
-  TSDB, il doit choisir au moins un label distinctif par installation (par
-  exemple `instance`). Interdire de redefinir les labels structurels
-  `__name__`, `context`, `source`, `signalk_path`, `preferred`, `value_str` et
-  `signalk_leaf`. Valider les noms/valeurs et interdire les doublons.
+- `minPeriodMs` vaut 5000 par defaut. `0` signifie ne pas demander de reduction
+  de frequence a Signal K. Une valeur positive utilise le `minPeriod` de la
+  souscription : elle transmet le premier delta d'un path, puis au plus un
+  nouveau delta apres chaque delai ecoule depuis le dernier transmis. Les
+  etats intermediaires ou le dernier etat avant une pause peuvent etre perdus.
+  Ce n'est pas un scrape periodique du dernier etat connu. Le batch HTTP reste
+  necessaire : ce reglage ne regroupe pas les series en un seul POST.
+- `labels`: `job` et `instance` sont obligatoires, visibles et modifiables.
+  Au premier demarrage, les valeurs absentes sont enregistrees une seule fois :
+  `job="signalk-victoriametrics"` et
+  `instance="signalk-victoriametrics-<10 caracteres hexadecimaux aleatoires>"`.
+  Les valeurs deja presentes ne sont pas modifiees. D'autres labels statiques
+  peuvent etre ajoutes. Deux installations dans un TSDB partage doivent avoir
+  des `instance` distincts. Interdire de redefinir les labels structurels
+  `__name__`, `context`, `source`, `signalk_path`, `preferred`, `value_str`,
+  `signalk_leaf`, `signalk_leaf_parts` et `signalk_value_type`. Valider les
+  noms/valeurs et interdire les doublons.
 - Une seule souscription est utilisee, avec `sourcePolicy: 'preferred'` et
   `policy: 'instant'`; pas de souscription `all`, pas de consultation du cache
   des sources pour deviner la preference. Le serveur envoie un snapshot cache
@@ -156,6 +163,11 @@ n'est pas un binaire pilote par le plugin.
   version Signal K minimale retenue (actuellement, il est emis pendant l'appel
   synchrone a `subscribe`). Ne pas utiliser un seuil de timestamp qui ferait
   perdre des deltas live retardes.
+- `cardinalityAlert.maxSeriesPerPathPerDay` vaut 100 par defaut (2 a 250).
+  Les combinaisons distinctes de labels sont comptees par `signalk_path` sur
+  le jour UTC de reception. `excludedPaths` supprime l'alerte pour les paths
+  indiques et leurs descendants, sans les exclure de l'ingestion. Aucune
+  alerte ne supprime ou ne modifie une mesure.
 
 ### 3.2 vmagent et destinations
 
@@ -166,10 +178,28 @@ n'est pas un binaire pilote par le plugin.
   vers le binaire vmagent deja installe sur la machine (cas Cerbo GX). Le
   plugin ne telecharge pas le binaire. L'URL d'entree est determinee par le
   plugin; elle n'est pas un parametre utilisateur.
+- Tout vmagent lance par le plugin scrape son propre `/metrics` sur localhost
+  toutes les 15 s via un fichier `-promscrape.config` genere. Ces metriques
+  partent vers toutes les destinations actives, sans option pour desactiver
+  ce suivi. Le job est `signalk-vmagent`; les labels identifient le contexte
+  Signal K et utilisent `ingest.labels.instance`. En mode lecture seule,
+  vmagent ne demarre pas.
+- `vmagent.exposeWebUi` et `destinations[*].exposeWebUi` sont faux par defaut.
+  La seconde option n'est disponible que pour VictoriaMetrics geree. La webapp
+  Signal K affiche un onglet par service expose, et aucun si toutes les options
+  sont desactivees. Les destinations distantes ne sont jamais relayees.
+  Les pages sont servies sous les routes administrateur du plugin, sans port
+  supplementaire ouvert sur l'hote. Le plugin applique `-http.pathPrefix`
+  uniquement aux services exposes et adapte ses URLs History, Remote Write,
+  de sante et d'auto-scrape. La desactivation ferme immediatement le relais.
 - `destinations`: tableau ordonne, identifiants `id` uniques. `kind` vaut
   `victoriametrics` ou `prometheus-compatible`. La seconde valeur couvre tout
   TSDB acceptant Prometheus Remote Write, pas seulement Prometheus lui-meme.
-  Seul `victoriametrics` peut avoir `read.enabled=true`.
+  Seul `victoriametrics` peut avoir `read.enabled=true`. Une destination doit
+  servir en ecriture, en lecture ou dans les deux sens; une destination sans
+  usage est refusee. Le panneau presente un choix unique d'usage plutot que
+  deux cases independantes. Une destination `prometheus-compatible` est
+  toujours utilisee en ecriture.
 - Pour une destination `victoriametrics`, `mode` vaut `managed-container`,
   `host-binary` ou `remote`. Les deux premiers demarrent une instance
   VictoriaMetrics single-node pilotee par le plugin, depuis une image epinglee
@@ -185,18 +215,22 @@ n'est pas un binaire pilote par le plugin.
   repli vers Prometheus Remote Write pour les recepteurs non VictoriaMetrics.
   Aucun choix de protocole ni option `force*Proto` n'est expose en v1. Pour
   un vrai serveur Prometheus, son recepteur Remote Write doit etre active.
-- Authentification des destinations distantes : aucune, Basic Auth ou bearer
-  token; TLS valide par defaut, CA personnalisee possible. Les secrets sont
-  rediges dans les logs/statuts. Ecrire les secrets dans des fichiers prives
-  sous le repertoire du plugin : les monter en lecture seule dans un vmagent
-  conteneurise ou les passer par chemin local au vmagent `host-binary`, puis
-  utiliser ses options `*File`. Ne pas mettre de mots de passe dans les
-  arguments ou URLs.
+- Authentification des destinations distantes en v1 : aucune ou un couple
+  Basic Auth `destination.auth` partage par l'ecriture et la lecture History.
+  TLS est valide par defaut. Bearer token, CA personnalisee et identifiants
+  distincts pour la lecture et l'ecriture sont differes. Les secrets sont
+  rediges dans les logs/statuts. Ecrire les identifiants d'ecriture dans des
+  fichiers prives sous le repertoire du plugin, accessibles au vmagent gere
+  ou `host-binary`, puis utiliser ses options `*File`. Ne pas mettre de mots
+  de passe dans les arguments ou URLs. Le mot de passe reste stocke dans la
+  configuration Signal K du plugin, accessible aux administrateurs.
 - `queueLimitBytesPerDestination` est **un seul reglage global** applique par
   `-remoteWrite.maxDiskUsagePerURL` a chaque sortie, quel que soit le mode de
   lancement de vmagent. Ce n'est pas un plafond global du disque : N sorties
   peuvent occuper environ N fois ce
-  plafond. Le repertoire de file `-remoteWrite.tmpDataPath` est persistant.
+  plafond. Le panneau affiche cette valeur en GiB (1 GiB = 1073741824 octets),
+  tandis que la configuration et vmagent utilisent les octets. Le repertoire
+  de file `-remoteWrite.tmpDataPath` est persistant.
   La valeur zero (sans limite) est refusee.
 - Conserver un ordre stable des destinations dans les arguments vmagent et ne
   pas deplacer/effacer les files existantes lors d'une simple mise a jour.
@@ -204,14 +238,15 @@ n'est pas un binaire pilote par le plugin.
   orpheline; l'interface doit avertir avant ce changement, sans suppression
   automatique des donnees.
 - Si aucune destination n'a `write.enabled=true`, ne pas souscrire aux deltas,
-  ne pas demarrer vmagent et ne pas accepter `ingest.enabled=true`.
+  ne pas demarrer vmagent et masquer son onglet de configuration. Une
+  VictoriaMetrics managée en lecture seule reste demarree.
 
 ### 3.3 Lecture History et retention
 
 - Zero ou **une seule** destination VictoriaMetrics avec `read.enabled=true`.
   Le validateur de configuration interdit de cocher `read.enabled` sur deux
   destinations : dans le panneau, une fois une destination selectionnee, les
-  autres controles de lecture sont grises. Une configuration editee a la main
+  choix d'usage avec lecture sont grises ailleurs. Une configuration editee a la main
   qui en active deux est refusee a l'enregistrement **et** au demarrage. Pas
   de selection du "premier", pas de fallback implicite. Une destination en
   lecture peut avoir `write.enabled=false`.
@@ -222,10 +257,8 @@ n'est pas un binaire pilote par le plugin.
   determine l'URL locale du processus qu'il demarre.
 - `read.selectorLabels` est facultatif et reprend `ingest.labels` par defaut.
   Pour lire les donnees d'un **autre** producteur, l'utilisateur fournit un
-  objet de labels correspondant a ce producteur. Sans labels supplementaires,
-  la lecture ne peut pas distinguer deux producteurs ayant les memes
-  `context`, `signalk_path` et `source` dans un TSDB partage; la configuration
-  doit afficher cet avertissement, sans inventer de label `job` ou `instance`.
+  objet de labels correspondant a ce producteur. Les labels obligatoires
+  `job`/`instance` isolent par defaut cette installation dans un TSDB partage.
 - `read.limits` borne le travail de lecture par requete; les valeurs de
   l'exemple sont les valeurs par defaut. Les limites peuvent etre reduites ou
   augmentees explicitement, jamais desactivees. `timeoutMs` couvre l'appel VM
@@ -233,7 +266,11 @@ n'est pas un binaire pilote par le plugin.
 - `retention` ne s'applique qu'aux VM gerees et configure `-retentionPeriod`.
   Elle s'applique a toute l'instance VM, pas a un bateau ni a un path. En mode
   `remote`, la retention est geree par l'administrateur du TSDB. `host-binary`
-  est gere et applique donc aussi ce reglage.
+  est gere et applique donc aussi ce reglage. Si le champ est absent, le plugin
+  utilise `30d`; s'il est vide, il reste vide dans la configuration et le
+  plugin transmet `100y` a VictoriaMetrics. C'est une approximation de la
+  retention illimitee, qui n'est pas prise en charge nativement par VM. Une
+  valeur explicite doit respecter le format VM et representer au moins un jour.
 - Le plugin n'enregistre `registerHistoryApiProvider` que si une destination
   de lecture est configuree. Au `stop`, il se desabonne et se desenregistre.
 
@@ -243,9 +280,9 @@ Le format suit `signalk-prometheus-exporter-macjl` 0.2.1 afin de faciliter
 la migration et les requetes existantes :
 
 ```text
-navigation_speedOverGround{context="vessels.urn:mrn:signalk:uuid:...",source="can0.device",signalk_path="navigation.speedOverGround",preferred="true"} 3.14 <timestamp-ms>
-navigation_position_longitude{context="...",source="can0.device",signalk_path="navigation.position",signalk_leaf="navigation.position.longitude",preferred="true"} 17.13 <timestamp-ms>
-navigation_position_latitude{context="...",source="can0.device",signalk_path="navigation.position",signalk_leaf="navigation.position.latitude",preferred="true"} 23.63 <timestamp-ms>
+navigation_speedOverGround{context="vessels.urn:mrn:signalk:uuid:...",source="can0.device",signalk_path="navigation.speedOverGround",preferred="true",job="signalk-victoriametrics",instance="signalk-victoriametrics-a1b2c3d4e5"} 3.14 <timestamp-ms>
+navigation_position_longitude{context="...",source="can0.device",signalk_path="navigation.position",signalk_leaf="navigation.position.longitude",preferred="true",job="signalk-victoriametrics",instance="signalk-victoriametrics-a1b2c3d4e5"} 17.13 <timestamp-ms>
+navigation_position_latitude{context="...",source="can0.device",signalk_path="navigation.position",signalk_leaf="navigation.position.latitude",preferred="true",job="signalk-victoriametrics",instance="signalk-victoriametrics-a1b2c3d4e5"} 23.63 <timestamp-ms>
 ```
 
 - `__name__` est le chemin aplati avec `.` et `-` remplaces par `_`, comme
@@ -255,21 +292,22 @@ navigation_position_latitude{context="...",source="can0.device",signalk_path="na
 - `source` est `update.$source`, jamais le nom affiche de la connexion.
   Un update sans source exploitable est ignore et compte comme anomalie, car
   il ne peut pas etre identifie sans ambiguite dans l'historique.
-- Aucun label supplementaire n'est ajoute d'office pour `job`, `instance` ou
-  l'identite du plugin. Si l'utilisateur les configure, ils figurent sur
-  **chaque** serie et dans les filtres de lecture. Dans un TSDB partage, des
-  labels identiques ou absents peuvent melanger les producteurs, y compris
-  l'ancien exporter; il faut des labels distinctifs explicites pour les isoler.
+- `job` et `instance` figurent sur **chaque** serie et dans les filtres de
+  lecture. Une autre installation doit utiliser une valeur `instance`
+  differente pour eviter de melanger ses donnees avec celles de ce plugin.
 - Les feuilles d'objets ont aussi `signalk_leaf` contenant le chemin Signal K
   complet de la feuille. Cela evite qu'une normalisation identique de deux
   feuilles d'un meme objet les fusionne. Les noms de metriques et le label
   racine `signalk_path` restent compatibles avec les requetes de l'exporter.
-- Les nombres finis sont des gauges; les booleens deviennent 0/1; les chaines
-  non-date deviennent une valeur 1 avec `value_str`; les chaines-date suivent
-  l'exporter et deviennent l'epoch en millisecondes. `null`, NaN, infini et
-  valeurs non prises en charge ne sont pas ecrits. Les objets sont aplatis
-  recursivement en feuilles numeriques, booleennes ou chaines, avec le path
-  racine dans `signalk_path`. `navigation.position` conserve les deux feuilles
+- Les nombres finis sont des gauges; les booleens deviennent 0/1 avec
+  `signalk_value_type="boolean"`; les chaines non-date deviennent une valeur 1
+  avec `value_str`; les chaines-date suivent l'exporter et deviennent l'epoch
+  en millisecondes avec `signalk_value_type="datetime"`. `null`, les objets et
+  tableaux vides sont representes par des marqueurs types de valeur 1. NaN,
+  infini et valeurs non prises en charge ne sont pas ecrits. Les objets et
+  tableaux sont aplatis recursivement en feuilles avec le path racine dans
+  `signalk_path`; `signalk_leaf_parts` conserve les segments des cles ambigues
+  et les indices de tableaux. `navigation.position` conserve les deux feuilles
   `latitude` et `longitude`; le couple est emis dans le meme batch avec le
   meme timestamp. Ne pas ecrire un couple partiel comme position valide.
 - Utiliser `update.timestamp` en millisecondes; si absent/invalide, utiliser
@@ -297,8 +335,10 @@ navigation_position_latitude{context="...",source="can0.device",signalk_path="na
 Le callback de souscription filtre et convertit sans I/O synchrone. Il ajoute
 les echantillons a une file memoire bornee. Un seul expediteur ordonne les
 lots par serie et les POST vers `vmagent /api/v1/write` (protobuf Prometheus
-v1 + Snappy). Les seuils `maxSamples`, `flushMs` et `maxPendingSamples` sont
-configurables et valides; une limite de taille HTTP doit aussi etre imposee.
+v1 + Snappy). `flushMs` vaut 1000 par defaut, independamment de `minPeriodMs`,
+et reste une option avancee. Les seuils `maxSamples`, `flushMs` et
+`maxPendingSamples` sont configurables et valides; une limite de taille HTTP
+doit aussi etre imposee.
 Ce batch n'ajoute aucun deuxieme flux depuis Signal K.
 
 Un 2xx de vmagent signifie acceptation par vmagent, **pas** persistance dans
@@ -321,6 +361,14 @@ la perte de donnees. Les metriques `/metrics` de vmagent servent de source de
 verite, pas une estimation locale. Aucun token, mot de passe ni URL contenant
 des secrets ne doit apparaitre dans un message de statut.
 
+Une derive de cardinalite declenche un avertissement visible dans le statut
+du plugin, avec les paths concernes, sans interrompre les ecritures. Le suivi
+memorise au plus le nombre d'empreintes requis pour atteindre le seuil par
+path, sur 500 paths au maximum; si cette derniere borne est atteinte, le
+statut signale que certains paths ne sont pas surveilles. Les compteurs sont
+remis a zero a minuit UTC et au redemarrage. Ils ne remplacent pas les
+statistiques de cardinalite de VictoriaMetrics sur les series deja stockees.
+
 ## 6. Contrat de lecture History
 
 Le provider implemente `getValues`, `getContexts` et `getPaths` de
@@ -328,6 +376,10 @@ Le provider implemente `getValues`, `getContexts` et `getPaths` de
 `/api/v1/export` (JSON lines, `match[]`, `start`, `end`), puis construit les
 intervalles et agregats History. `query_range` ne sert pas de source brute :
 son `step` reevalue les series et peut masquer des variations entre deux pas.
+`getContexts` et `getPaths` utilisent `/api/v1/label/<name>/values` avec
+`match[]`, `start`, `end` et une limite de resultats; ils ne telechargent pas
+les echantillons. VictoriaMetrics arrondit ces bornes aux jours UTC : une
+valeur decouverte peut ne pas avoir de mesure dans la sous-periode exacte.
 Les selecteurs utilisent `signalk_path`, `context`, `preferred="true"`, les
 labels supplementaires du selecteur de lecture et, si demande, `source`.
 Les valeurs de filtre sont echappees; pas de concatenation directe d'entrees
@@ -365,18 +417,28 @@ limite produit une erreur explicite, jamais une reponse tronquee silencieuse.
   prises en charge en v1; la moyenne d'une position n'est pas la moyenne
   independante des coordonnees. Les autres methodes sont refusees, jamais
   remplacees silencieusement.
-- `getContexts` et `getPaths` sont bornes par la periode demandee et par les
-  labels du selecteur de lecture. Sans labels distinctifs dans un TSDB
+- Les chaines, booleens et objets JSON sont restitues dans leur type d'origine.
+  Les feuilles d'un objet sont regroupees uniquement si elles ont le meme
+  timestamp et la meme source. `first`, `last` et `middle_index` selectionnent
+  une valeur dans un bucket. Signal K demande `average` par defaut, sans
+  connaitre le type du path. Si un path contient des valeurs non numeriques,
+  le provider applique `last` a toute la colonne et annonce `method: last`
+  dans la reponse, meme si `average` etait explicitement demande. Les paths
+  exclusivement numeriques conservent `average`. `min`, `max` et `mid`
+  restent reserves aux valeurs numeriques.
+- `getContexts` et `getPaths` sont bornes par les jours UTC contenant la
+  periode demandee et par les labels du selecteur de lecture. Sans labels distinctifs dans un TSDB
   partage, ils peuvent remonter les series d'autres producteurs : c'est une
   limite explicite de la configuration, pas un filtrage implicite.
 - Une VM de lecture indisponible produit une erreur History claire et un
   statut plugin en erreur; aucune bascule vers une autre VM n'est tentee.
 
-La lecture numerique et `navigation.position` sont obligatoires. Les series
-`value_str`, les booleens et les objets generiques peuvent etre ecrits mais
-leur restitution **typee** n'est pas garantie sans un contrat additionnel de
-type; la v1 doit documenter/rejeter les combinaisons qu'elle ne peut pas
-reconstruire fidelement, plutot que fabriquer une valeur trompeuse.
+Les anciennes series booleennes et chaines-date ecrites sans
+`signalk_value_type` restent numeriques : leur type original ne peut pas etre
+deduit des labels deja stockes. Les series d'objets numeriques ecrites avec
+`signalk_leaf` sont relues sans migration. Une feuille absente ne peut pas etre
+reconstituee et ne doit jamais etre empruntee a une autre source ou un autre
+timestamp.
 
 ## 7. Gestion des conteneurs et stockage
 
@@ -425,9 +487,8 @@ un TSDB compatible Prometheus distant peut etre une sortie ecriture seule.
 
 1. Relever les chemins inclus/exclus, les contextes, les labels existants,
    les dashboards, les regles d'alerte et la retention actuels.
-2. Definir explicitement les labels statiques necessaires pour identifier ce
-   Signal K sans collision, par exemple `job` et `instance` si ces labels
-   etaient utilises auparavant. Aucun n'est ajoute par defaut.
+2. Verifier les labels `job` et `instance` crees au premier demarrage ou
+   conserver les valeurs deja configurees pour ce Signal K.
    Les noms de metriques et `signalk_path` restent proches de l'exporter,
    mais la cadence change : push evenementiel au lieu de scrape periodique.
 3. Avec VictoriaMetrics deja demarre, configurer cette instance en mode
@@ -440,7 +501,9 @@ un TSDB compatible Prometheus distant peut etre une sortie ecriture seule.
    migration transparente. L'historique ancien n'est pas reimporte ni
    retroactivement corrige. Ne pas supposer que `preferred="true"` isole les
    nouvelles series : l'ancien exporter pouvait aussi emettre ce label.
-   Eviter d'ecrire simultanement les deux flux sous les memes labels.
+   Eviter d'ecrire simultanement les deux flux sous les memes labels. Un
+   changement de `job` ou `instance` masque les series anterieures a la
+   lecture History par defaut, sans supprimer les donnees du TSDB.
 5. Comparer les series pendant une courte phase de validation avec des labels
    d'instance distincts, puis arreter l'ancien exporter si le TSDB recoit le
    nouveau flux. Adapter les alertes basees sur la metrique de session.
@@ -462,7 +525,10 @@ anciennes series n'est promise.
   plusieurs sources sans regle restent possibles; changement de source lisible
   sans consulter la preference live; filtre `sourceRef`; refus de
   `sourcePolicy=all`; label `preferred="true"` sur chaque mesure Signal K;
-  aucun `job`/`instance` ajoute quand `ingest.labels` est vide.
+  `job`/`instance` presents et stables apres le premier demarrage.
+- Tests de cardinalite : serie repetee comptee une fois, seuil 100 par
+  defaut, exemption sans effet sur l'ingestion, remise a zero UTC, memoire
+  bornee et avertissement si la borne de paths suivis est atteinte.
 - Tests History : series brutes et agregats, angles, position et couple
   incomplet, ordre des colonnes, limites de requete, isolation par labels,
   panne VM et erreur explicite.

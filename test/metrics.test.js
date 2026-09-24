@@ -55,3 +55,15 @@ test('filters original leaves and drops invalid sources and values', () => {
   delta.updates[0].$source = undefined
   assert.deepEqual(deltaToSamples(delta, selected, self), [])
 })
+
+test('encodes string and JSON types without turning booleans into untyped numbers', () => {
+  const samples = deltaToSamples({ context: self, updates: [{ $source: 'sensor', values: [
+    { path: 'navigation.state', value: 'moored' },
+    { path: 'navigation.flags', value: { active: true, names: ['a', null], empty: [] } }
+  ] }] }, config, self, 1234)
+  assert.equal(samples.find(sample => sample.labels.signalk_path === 'navigation.state').labels.value_str, 'moored')
+  assert.equal(samples.find(sample => sample.labels.signalk_leaf === 'navigation.flags.active').labels.signalk_value_type, 'boolean')
+  assert.equal(samples.find(sample => sample.labels.signalk_leaf === 'navigation.flags.names.0').labels.signalk_leaf_parts, '["names",0]')
+  assert.equal(samples.find(sample => sample.labels.signalk_leaf === 'navigation.flags.names.1').labels.signalk_value_type, 'null')
+  assert.equal(samples.find(sample => sample.labels.signalk_leaf === 'navigation.flags.empty').labels.signalk_value_type, 'array')
+})

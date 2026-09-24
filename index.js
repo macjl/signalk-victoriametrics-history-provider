@@ -7,6 +7,9 @@ import { startManagedServices } from './src/managed.js'
 import { VictoriaMetricsHistory } from './src/history.js'
 import { schema } from './src/schema.js'
 import { parseVmagentStatus } from './src/vmagent-status.js'
+import { proxyManagedUi } from './src/web-ui-proxy.js'
+import { withIdentityLabels } from './src/identity-labels.js'
+import { CardinalityAlert } from './src/cardinality-alert.js'
 
 const id = 'signalk-victoriametrics-history-provider'
 
@@ -20,20 +23,35 @@ export default function createPlugin(app) {
   let unsubscribes = []
   let historyRegistered = false
   let agentFailed = false
+  let healthFailed = false
   let historyFailed = false
   let lossError = false
   let lastStatus = ''
+  let lastError = ''
+  let uiTargets = new Map()
+  let cardinality = null
+  let cardinalityWarning = ''
 
   function setStatus(message) {
-    if (message !== lastStatus) {
+    if (message !== lastStatus || lastError) {
       lastStatus = message
+      lastError = ''
       app.setPluginStatus(message)
     }
   }
 
   function setError(message) {
-    lastStatus = ''
-    app.setPluginError(message)
+    if (message !== lastError) {
+      lastStatus = ''
+      lastError = message
+      app.setPluginError(message)
+    }
+  }
+
+  function reportOperational(message) {
+    if (agentFailed || healthFailed || historyFailed || lossError) return
+    if (cardinalityWarning) setError(cardinalityWarning)
+    else setStatus(message)
   }
 
   function setAgentError(message) {
@@ -51,14 +69,22 @@ export default function createPlugin(app) {
     healthTimer = null
     batcher?.stop()
     batcher = null
+    cardinality = null
+    cardinalityWarning = ''
     if (historyRegistered) app.unregisterHistoryApiProvider()
     historyRegistered = false
-    agent?.stop()
+    const previousAgent = agent
     agent = null
     const previous = managed
     managed = null
-    if (previous) await previous.stop()
+    uiTargets = new Map()
+    try {
+      if (previousAgent) await previousAgent.stop()
+    } finally {
+      if (previous) await previous.stop()
+    }
     agentFailed = false
+    healthFailed = false
     historyFailed = false
     lossError = false
     if (reportStopped) setStatus('Stopped')
@@ -66,7 +92,8 @@ export default function createPlugin(app) {
 
   function start(raw = {}) {
     const previous = cleanup(false)
-    const options = validateConfig(raw)
+    const identity = withIdentityLabels(raw)
+    const options = validateConfig(identity.configuration)
     const reader = options.destinations.find(destination => destination.read?.enabled)
     if (options.destinations.some(destination => destination.mode === 'host-binary')) {
       throw new Error('VictoriaMetrics host-binary mode is not implemented yet')
@@ -82,22 +109,30 @@ export default function createPlugin(app) {
     void (async () => {
       await previous
       if (current !== generation) return
-      const needManaged = options.destinations.some(destination => destination.mode === 'managed-container') ||
+      if (identity.changed) {
+        await new Promise((resolve, reject) => app.savePluginOptions(identity.configuration, error =>
+          error ? reject(error) : resolve()))
+        if (current !== generation) return
+      }
+      const needManaged = options.destinations.some(destination => destination.mode === 'managed-container' &&
+        (destination.write?.enabled || destination.read?.enabled)) ||
         (options.ingest.enabled && options.vmagent.mode === 'managed-container')
       if (needManaged) {
         setStatus('Starting managed VictoriaMetrics services')
-        const started = await startManagedServices(app, options, controller.signal)
+        const started = await startManagedServices(app, options, controller.signal, selfContext)
         if (current !== generation) {
           await started.stop()
           return
         }
         managed = started
+        uiTargets = new Map(started.uiTargets)
       }
 
       if (reader) {
         const readUrl = reader.mode === 'managed-container' ? managed.urls.get(reader.id) : reader.read.url
         const history = new VictoriaMetricsHistory({
           baseUrl: readUrl,
+          auth: reader.auth,
           labels: options.ingest.labels,
           limits: reader.read.limits,
           selfContext
@@ -107,7 +142,7 @@ export default function createPlugin(app) {
             const result = await history[method](query)
             if (historyFailed && current === generation) {
               historyFailed = false
-              if (!agentFailed && !lossError) setStatus(options.ingest.enabled ? 'Ingesting preferred Signal K deltas' : 'History provider ready')
+              reportOperational(options.ingest.enabled ? 'Ingesting preferred Signal K deltas' : 'History provider ready')
             }
             return result
           } catch (error) {
@@ -123,6 +158,7 @@ export default function createPlugin(app) {
       }
 
       if (options.ingest.enabled) {
+        cardinality = new CardinalityAlert(options.ingest.cardinalityAlert)
         if (options.vmagent.mode === 'host-binary') {
           const resolved = {
             ...options,
@@ -130,7 +166,7 @@ export default function createPlugin(app) {
               ? { ...destination, write: { ...destination.write, url: managed.writeUrls.get(destination.id) } }
               : destination)
           }
-          agent = await startHostVmagent(resolved, app.getDataDirPath(), error => {
+          agent = await startHostVmagent(resolved, app.getDataDirPath(), selfContext, error => {
             if (current === generation) setAgentError(error.message)
           })
           if (current !== generation) {
@@ -138,6 +174,7 @@ export default function createPlugin(app) {
             agent = null
             return
           }
+          if (agent.uiTarget) uiTargets.set('vmagent', agent.uiTarget)
         }
         const address = agent?.url ?? `${managed.urls.get('vmagent')}/api/v1/write`
         const healthUrl = agent?.healthUrl ?? `${managed.urls.get('vmagent')}/metrics`
@@ -147,7 +184,7 @@ export default function createPlugin(app) {
             await postSamples(address, samples)
             if (agentFailed && !lossError && current === generation) {
               agentFailed = false
-              if (!historyFailed) setStatus('Ingesting preferred Signal K deltas')
+              reportOperational('Ingesting preferred Signal K deltas')
             }
           },
           onError: error => { if (current === generation) setAgentError(error.message) }
@@ -159,7 +196,12 @@ export default function createPlugin(app) {
           sourcePolicy: 'preferred'
         }, unsubscribes, error => { if (current === generation) setAgentError(String(error)) }, delta => {
           if (bootstrapping || current !== generation) return
-          batcher.add(deltaToSamples(delta, options.ingest, selfContext))
+          const samples = deltaToSamples(delta, options.ingest, selfContext)
+          batcher.add(samples)
+          if (cardinality.observe(samples)) {
+            cardinalityWarning = cardinality.message()
+            reportOperational('Ingesting preferred Signal K deltas')
+          }
         })
         bootstrapping = false
         healthTimer = setInterval(async () => {
@@ -167,21 +209,24 @@ export default function createPlugin(app) {
             const response = await fetch(healthUrl, { signal: AbortSignal.timeout(2000) })
             if (!response.ok) throw new Error('unhealthy')
             const vm = parseVmagentStatus(await response.text())
+            if (current !== generation) return
+            if (cardinality.rollover()) cardinalityWarning = cardinality.message()
             if (vm.droppedSamples > 0 || batcher.dropped > 0) {
               lossError = true
               setError(`Data loss: plugin ${batcher.dropped} samples, vmagent ${vm.droppedSamples} samples`)
               return
             }
-            if (current === generation) {
-              agentFailed = false
-              if (!historyFailed && !lossError) setStatus(`Ingesting; vmagent queue ${vm.pendingBytes} bytes; push failures ${vm.pushFailures}`)
-            }
+            healthFailed = false
+            reportOperational(`Ingesting; vmagent queue ${vm.pendingBytes} bytes; push failures ${vm.pushFailures}`)
           } catch {
-            if (current === generation) setAgentError('vmagent is unavailable')
+            if (current === generation) {
+              healthFailed = true
+              setError('vmagent is unavailable')
+            }
           }
         }, 5000)
       }
-      setStatus(options.ingest.enabled ? 'Ingesting preferred Signal K deltas' : 'History provider ready')
+      reportOperational(options.ingest.enabled ? 'Ingesting preferred Signal K deltas' : 'History provider ready')
     })().catch(async error => {
       if (current === generation) {
         setError(error.message)
@@ -196,6 +241,20 @@ export default function createPlugin(app) {
     name: 'VictoriaMetrics History Provider (experimental)',
     description: 'Store preferred Signal K deltas in VictoriaMetrics and serve History',
     schema,
+    registerWithRouter(router) {
+      router.get('/ui/manifest', (_req, res) => {
+        res.setHeader('Cache-Control', 'no-store')
+        res.json([...uiTargets].map(([id, target]) => ({ id, title: target.title, path: target.path })))
+      })
+      router.use('/ui/:serviceId', (req, res) => {
+        const target = uiTargets.get(req.params.serviceId)
+        if (!target) {
+          res.status(404).end()
+          return
+        }
+        void proxyManagedUi(req, res, target)
+      })
+    },
     start,
     stop: () => cleanup(true)
   }

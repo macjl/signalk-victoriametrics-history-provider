@@ -1,2 +1,7 @@
 node_modules/
 coverage/
+public/*
+!public/index.html
+!public/webapp.js
+!public/webapp.css
+*.tgz

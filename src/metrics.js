@@ -12,17 +12,25 @@ function allowed(path, config) {
   return config.filterMode === 'whitelist' ? matches : !matches
 }
 
-function leafSamples(path, value, config, isLeaf = false) {
-  if (value === null || value === undefined) return []
-  if (typeof value === 'number') return Number.isFinite(value) ? [{ path, value, isLeaf }] : []
-  if (typeof value === 'boolean') return [{ path, value: value ? 1 : 0, isLeaf }]
+function leafSamples(path, value, parts = []) {
+  const isLeaf = parts.length > 0
+  const sample = (number, extra = {}) => [{ path, value: number, isLeaf, parts, ...extra }]
+  if (value === undefined) return []
+  if (value === null) return sample(1, { valueType: 'null' })
+  if (typeof value === 'number') return Number.isFinite(value) ? sample(value) : []
+  if (typeof value === 'boolean') return sample(value ? 1 : 0, { valueType: 'boolean' })
   if (typeof value === 'string') {
-    if (!value) return []
     const date = /^\d{4}-\d\d-\d\dT/.test(value) ? Date.parse(value) : NaN
-    return [{ path, value: Number.isFinite(date) ? date : 1, valueStr: Number.isFinite(date) ? undefined : value, isLeaf }]
+    return Number.isFinite(date) ? sample(date, { valueType: 'datetime' }) : sample(1, { valueStr: value })
   }
-  if (!value || Array.isArray(value) || typeof value !== 'object') return []
-  return Object.entries(value).flatMap(([key, child]) => leafSamples(`${path}.${key}`, child, config, true))
+  if (Array.isArray(value)) {
+    return value.length === 0 ? sample(1, { valueType: 'array' }) :
+      value.flatMap((child, index) => leafSamples(`${path}.${index}`, child, [...parts, index]))
+  }
+  if (!value || typeof value !== 'object') return []
+  const entries = Object.entries(value)
+  return entries.length === 0 ? sample(1, { valueType: 'object' }) :
+    entries.flatMap(([key, child]) => leafSamples(`${path}.${key}`, child, [...parts, key]))
 }
 
 export function deltaToSamples(delta, config, selfContext, now = Date.now()) {
@@ -42,8 +50,8 @@ export function deltaToSamples(delta, config, selfContext, now = Date.now()) {
         ? leafSamples(root, {
             longitude: entry.value.longitude,
             latitude: entry.value.latitude
-          }, config)
-        : leafSamples(root, entry.value, config)
+          })
+        : leafSamples(root, entry.value)
       if (position && leaves.filter(leaf => allowed(leaf.path, config)).length !== 2) continue
       for (const leaf of leaves) {
         if (!allowed(leaf.path, config)) continue
@@ -56,7 +64,11 @@ export function deltaToSamples(delta, config, selfContext, now = Date.now()) {
           ...config.labels
         }
         if (leaf.isLeaf) labels.signalk_leaf = leaf.path
+        if (leaf.parts.some(part => typeof part === 'number' || part === '' || part.includes('.') || /^\d+$/.test(part))) {
+          labels.signalk_leaf_parts = JSON.stringify(leaf.parts)
+        }
         if (leaf.valueStr !== undefined) labels.value_str = leaf.valueStr
+        if (leaf.valueType !== undefined) labels.signalk_value_type = leaf.valueType
         output.push({ labels, value: leaf.value, timestamp })
       }
     }

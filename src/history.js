@@ -27,17 +27,26 @@ function selector(labels) {
   return `{${Object.entries(labels).map(([name, value]) => `${name}=${JSON.stringify(value)}`).join(',')}}`
 }
 
+function orderedSamples(samples) {
+  return [...samples].sort((a, b) => a.timestamp - b.timestamp || a.source.localeCompare(b.source))
+    .filter((sample, index, all) => index === 0 || sample.timestamp !== all[index - 1].timestamp)
+}
+
 function aggregate(samples, method, angular) {
   if (!samples.length) return null
-  const ordered = samples.sort((a, b) => a.timestamp - b.timestamp || a.source.localeCompare(b.source))
-    .filter((sample, index, all) => index === 0 || sample.timestamp !== all[index - 1].timestamp)
-  const values = ordered.map(sample => sample.value)
+  const values = samples.map(sample => sample.value)
   if (method === 'first') return values[0]
   if (method === 'last') return values.at(-1)
   if (method === 'middle_index') return values[Math.floor((values.length - 1) / 2)]
-  if (method === 'min') return Math.min(...values)
-  if (method === 'max') return Math.max(...values)
-  if (method === 'mid') return (Math.min(...values) + Math.max(...values)) / 2
+  if (method === 'min' || method === 'max' || method === 'mid') {
+    let min = values[0]
+    let max = values[0]
+    for (const value of values) {
+      if (value < min) min = value
+      if (value > max) max = value
+    }
+    return method === 'min' ? min : method === 'max' ? max : (min + max) / 2
+  }
   if (method === 'average') {
     if (!angular) return values.reduce((sum, value) => sum + value, 0) / values.length
     const sine = values.reduce((sum, value) => sum + Math.sin(value), 0)
@@ -47,17 +56,95 @@ function aggregate(samples, method, angular) {
   throw new Error(`Unsupported History aggregate: ${method}`)
 }
 
+function aggregateValues(samples, method, angular, path) {
+  const ordered = orderedSamples(samples)
+  if (!ordered.length) return null
+  if (method === 'first') return ordered[0].value
+  if (method === 'last') return ordered.at(-1).value
+  if (method === 'middle_index') return ordered[Math.floor((ordered.length - 1) / 2)].value
+  if (ordered.some(sample => typeof sample.value !== 'number')) {
+    throw new Error(`Unsupported History aggregate for ${path}: ${method} requires numeric values; use :first, :last or :middle_index`)
+  }
+  return aggregate(ordered, method, angular)
+}
+
+function decodeValue(metric, value) {
+  const type = metric.signalk_value_type
+  if (type === 'null') return null
+  if (type === 'object') return {}
+  if (type === 'array') return []
+  if (type === 'boolean') {
+    if (value !== 0 && value !== 1) throw new Error('Invalid boolean History sample')
+    return value === 1
+  }
+  if (type === 'datetime') return new Date(value).toISOString()
+  if (type !== undefined) throw new Error(`Unsupported History value type: ${type}`)
+  return metric.value_str !== undefined ? metric.value_str : value
+}
+
+function leafParts(metric, path) {
+  if (metric.signalk_leaf_parts !== undefined) {
+    let parts
+    try {
+      parts = JSON.parse(metric.signalk_leaf_parts)
+    } catch {
+      throw new Error('Invalid History leaf parts')
+    }
+    if (!Array.isArray(parts) || parts.length === 0 || parts.some(part =>
+      typeof part !== 'string' && (!Number.isSafeInteger(part) || part < 0))) {
+      throw new Error('Invalid History leaf parts')
+    }
+    return parts
+  }
+  const leaf = metric.signalk_leaf
+  if (typeof leaf !== 'string' || !leaf.startsWith(`${path}.`)) throw new Error(`Invalid History leaf for ${path}`)
+  return leaf.slice(path.length + 1).split('.')
+}
+
+function putLeaf(target, key, value) {
+  Object.defineProperty(target, key, { value, enumerable: true, writable: true, configurable: true })
+}
+
+function reconstructValue(entries, path) {
+  const rootEntries = entries.filter(entry => entry.parts === null)
+  if (rootEntries.length) {
+    if (entries.length !== 1) throw new Error(`Mixed scalar and object History values for ${path}`)
+    return rootEntries[0].value
+  }
+  const root = typeof entries[0].parts[0] === 'number' ? [] : {}
+  for (const entry of entries) {
+    let target = root
+    for (let i = 0; i < entry.parts.length; i++) {
+      const part = entry.parts[i]
+      if (i === entry.parts.length - 1) {
+        putLeaf(target, part, entry.value)
+      } else {
+        if (!Object.hasOwn(target, part)) {
+          putLeaf(target, part, typeof entry.parts[i + 1] === 'number' ? [] : {})
+        }
+        target = target[part]
+        if (target === null || typeof target !== 'object') throw new Error(`Conflicting History leaves for ${path}`)
+      }
+    }
+  }
+  return root
+}
+
 function isAngular(path) {
-  return /(?:Angle|angle|Heading|heading|Course|course|Direction|direction|Variation|variation)$/.test(path)
+  const leaf = path.split('.').at(-1)
+  return /(?:angle|heading|course|direction|variation|bearing|azimuth)/i.test(leaf)
 }
 
 export class VictoriaMetricsHistory {
-  constructor({ baseUrl, labels = {}, limits = {}, selfContext, fetchImpl = fetch }) {
+  constructor({ baseUrl, labels = {}, limits = {}, selfContext, auth, fetchImpl = fetch }) {
     this.baseUrl = baseUrl.replace(/\/+$/, '')
     this.labels = labels
     this.limits = { ...DEFAULT_LIMITS, ...limits }
     this.selfContext = selfContext
     this.fetchImpl = fetchImpl
+    this.authHeader = auth?.type === 'basic'
+      ? `Basic ${Buffer.from(`${auth.username}:${auth.password}`).toString('base64')}`
+      : undefined
   }
 
   async exportSeries(extraLabels, range) {
@@ -70,7 +157,8 @@ export class VictoriaMetricsHistory {
       end: String(range.to / 1000)
     })
     const response = await this.fetchImpl(`${this.baseUrl}/api/v1/export?${params}`, {
-      signal: AbortSignal.timeout(this.limits.timeoutMs)
+      signal: AbortSignal.timeout(this.limits.timeoutMs),
+      ...(this.authHeader ? { headers: { Authorization: this.authHeader } } : {})
     })
     if (!response.ok) throw new Error(`VictoriaMetrics export failed: HTTP ${response.status}`)
     const reader = response.body.getReader()
@@ -97,8 +185,11 @@ export class VictoriaMetricsHistory {
           }
           series.push(item)
           samples += item.values.length
-          if (series.length > this.limits.maxSeries || samples > this.limits.maxSamples) {
-            throw new Error('History series/sample limit exceeded')
+          if (series.length > this.limits.maxSeries) {
+            throw new Error(`History series limit exceeded for ${extraLabels.signalk_path}: ${series.length} > ${this.limits.maxSeries}`)
+          }
+          if (samples > this.limits.maxSamples) {
+            throw new Error(`History sample limit exceeded for ${extraLabels.signalk_path}: ${samples} > ${this.limits.maxSamples}`)
           }
         }
       }
@@ -110,8 +201,11 @@ export class VictoriaMetricsHistory {
         }
         series.push(item)
         samples += item.values.length
-        if (series.length > this.limits.maxSeries || samples > this.limits.maxSamples) {
-          throw new Error('History series/sample limit exceeded')
+        if (series.length > this.limits.maxSeries) {
+          throw new Error(`History series limit exceeded for ${extraLabels.signalk_path}: ${series.length} > ${this.limits.maxSeries}`)
+        }
+        if (samples > this.limits.maxSamples) {
+          throw new Error(`History sample limit exceeded for ${extraLabels.signalk_path}: ${samples} > ${this.limits.maxSamples}`)
         }
       }
     } catch (error) {
@@ -121,6 +215,49 @@ export class VictoriaMetricsHistory {
       reader.releaseLock()
     }
     return series
+  }
+
+  async labelValues(name, range) {
+    if (range.to - range.from > this.limits.maxRangeDays * 86400000) {
+      throw new Error('History range limit exceeded')
+    }
+    const params = new URLSearchParams({
+      'match[]': selector({ preferred: 'true', ...this.labels }),
+      start: String(range.from / 1000),
+      end: String(range.to / 1000),
+      limit: String(this.limits.maxSeries + 1)
+    })
+    const response = await this.fetchImpl(`${this.baseUrl}/api/v1/label/${name}/values?${params}`, {
+      signal: AbortSignal.timeout(this.limits.timeoutMs),
+      ...(this.authHeader ? { headers: { Authorization: this.authHeader } } : {})
+    })
+    if (!response.ok) throw new Error(`VictoriaMetrics label query failed: HTTP ${response.status}`)
+    const reader = response.body.getReader()
+    const chunks = []
+    let bytes = 0
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        bytes += value.byteLength
+        if (bytes > this.limits.maxResponseBytes) throw new Error('History response size limit exceeded')
+        chunks.push(value)
+      }
+    } catch (error) {
+      await reader.cancel().catch(() => {})
+      throw error
+    } finally {
+      reader.releaseLock()
+    }
+    const result = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    if (result.status !== 'success' || !Array.isArray(result.data) ||
+        result.data.some(value => typeof value !== 'string')) {
+      throw new Error('Invalid VictoriaMetrics label response')
+    }
+    if (result.data.length > this.limits.maxSeries) {
+      throw new Error(`History ${name} discovery limit exceeded: ${result.data.length} > ${this.limits.maxSeries}`)
+    }
+    return result.data.sort()
   }
 
   async getValues(query) {
@@ -144,39 +281,53 @@ export class VictoriaMetricsHistory {
       const series = await this.exportSeries(labels, range)
       const byTime = new Map()
       for (const item of series) {
-        if (item.metric.value_str !== undefined) throw new Error(`Typed History value is unsupported for ${spec.path}`)
+        const parts = item.metric.signalk_leaf === undefined ? null : leafParts(item.metric, spec.path)
         for (let i = 0; i < item.values.length; i++) {
           const timestamp = Number(item.timestamps[i])
           const value = Number(item.values[i])
           if (!Number.isFinite(timestamp) || !Number.isFinite(value) || timestamp < range.from || timestamp >= range.to) continue
           const bucket = resolutionMs === undefined ? timestamp : range.from + Math.floor((timestamp - range.from) / resolutionMs) * resolutionMs
-          if (!byTime.has(bucket)) byTime.set(bucket, [])
-          byTime.get(bucket).push({ timestamp, source: item.metric.source ?? '', leaf: item.metric.signalk_leaf, value })
+          if (!byTime.has(bucket)) byTime.set(bucket, new Map())
+          const groups = byTime.get(bucket)
+          const source = item.metric.source ?? ''
+          const key = JSON.stringify([timestamp, source])
+          if (!groups.has(key)) groups.set(key, { timestamp, source, entries: [] })
+          groups.get(key).entries.push({ leaf: item.metric.signalk_leaf, parts, value: decodeValue(item.metric, value) })
         }
       }
+      const snapshots = new Map()
+      let hasTypedValues = false
+      for (const [timestamp, groups] of byTime) {
+        const samples = [...groups.values()].map(group => {
+          if (!position) return { timestamp: group.timestamp, source: group.source, value: reconstructValue(group.entries, spec.path) }
+          const longitude = group.entries.find(entry => entry.leaf === 'navigation.position.longitude')?.value
+          const latitude = group.entries.find(entry => entry.leaf === 'navigation.position.latitude')?.value
+          return {
+            timestamp: group.timestamp,
+            source: group.source,
+            value: Number.isFinite(longitude) && Number.isFinite(latitude) ? [longitude, latitude] : null
+          }
+        })
+        snapshots.set(timestamp, samples)
+        if (!position && samples.some(sample => typeof sample.value !== 'number')) hasTypedValues = true
+      }
+      const effectiveMethod = method === 'average' && hasTypedValues ? 'last' : method
       const result = new Map()
-      for (const [timestamp, samples] of byTime) {
+      for (const [timestamp, samples] of snapshots) {
         if (!position) {
-          result.set(timestamp, aggregate(samples, method, isAngular(spec.path)))
+          result.set(timestamp, aggregateValues(samples, effectiveMethod, isAngular(spec.path), spec.path))
           continue
         }
-        const pairs = new Map()
-        for (const sample of samples) {
-          const key = `${sample.timestamp}\0${sample.source}`
-          if (!pairs.has(key)) pairs.set(key, { timestamp: sample.timestamp, source: sample.source })
-          if (sample.leaf === 'navigation.position.longitude') pairs.get(key).longitude = sample.value
-          if (sample.leaf === 'navigation.position.latitude') pairs.get(key).latitude = sample.value
-        }
-        const complete = [...pairs.values()].filter(pair => Number.isFinite(pair.longitude) && Number.isFinite(pair.latitude))
+        const complete = samples.filter(sample => sample.value !== null)
           .sort((a, b) => a.timestamp - b.timestamp || a.source.localeCompare(b.source))
         if (complete.length) {
-          const index = method === 'last' ? complete.length - 1 : method === 'middle_index' ? Math.floor((complete.length - 1) / 2) : 0
-          result.set(timestamp, [complete[index].longitude, complete[index].latitude])
+          const index = effectiveMethod === 'last' ? complete.length - 1 : effectiveMethod === 'middle_index' ? Math.floor((complete.length - 1) / 2) : 0
+          result.set(timestamp, complete[index].value)
         } else {
           result.set(timestamp, null)
         }
       }
-      columns.push({ spec, method, result })
+      columns.push({ spec, method: effectiveMethod, result })
     }
     const timestamps = new Set(columns.flatMap(column => [...column.result.keys()]))
     return {
@@ -190,12 +341,10 @@ export class VictoriaMetricsHistory {
   }
 
   async getContexts(query) {
-    const series = await this.exportSeries({}, rangeFor(query))
-    return [...new Set(series.map(item => item.metric.context).filter(Boolean))].sort()
+    return this.labelValues('context', rangeFor(query))
   }
 
   async getPaths(query) {
-    const series = await this.exportSeries({}, rangeFor(query))
-    return [...new Set(series.map(item => item.metric.signalk_path).filter(Boolean))].sort()
+    return this.labelValues('signalk_path', rangeFor(query))
   }
 }

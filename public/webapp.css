@@ -1,0 +1,14 @@
+* { box-sizing: border-box; }
+html, body { margin: 0; width: 100%; height: 100%; font-family: system-ui, sans-serif; color: #253238; }
+.shell { display: flex; flex-direction: column; height: 100vh; min-height: 320px; background: #fff; }
+.header { display: flex; align-items: center; gap: 24px; min-height: 56px; padding: 0 16px; border-bottom: 1px solid #d5dddf; }
+h1 { margin: 0; font-size: 17px; font-weight: 650; white-space: nowrap; }
+nav { display: flex; gap: 3px; align-self: stretch; overflow-x: auto; min-width: 0; }
+nav button { flex: none; padding: 0 14px; border: 0; border-bottom: 3px solid transparent; background: transparent; color: #4a5c62; font: inherit; font-size: 14px; cursor: pointer; white-space: nowrap; }
+nav button[aria-selected="true"] { border-bottom-color: #137d70; color: #125f55; font-weight: 600; }
+nav button:hover { background: #f2f6f6; }
+nav button:focus-visible { outline: 2px solid #137d70; outline-offset: -2px; }
+.message { margin: auto; padding: 24px; color: #5d6b70; text-align: center; }
+iframe { display: block; width: 100%; flex: 1; min-height: 0; border: 0; background: #fff; }
+iframe[hidden], .message[hidden] { display: none; }
+@media (max-width: 600px) { .header { flex-wrap: wrap; gap: 0; padding: 8px 12px 0; } h1 { width: 100%; } nav { max-width: 100%; min-height: 44px; } }

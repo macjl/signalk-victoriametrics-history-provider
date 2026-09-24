@@ -1,4 +1,8 @@
-import { DEFAULT_IMAGE_TAG } from './managed.js'
+const auth = { type: 'object', required: ['type', 'username', 'password'], properties: {
+  type: { type: 'string', enum: ['basic'] },
+  username: { type: 'string' },
+  password: { type: 'string', format: 'password' }
+} }
 
 const read = {
   type: 'object',
@@ -19,21 +23,27 @@ export const schema = {
   type: 'object',
   properties: {
     ingest: { type: 'object', properties: {
-      enabled: { type: 'boolean', default: false },
       contexts: { type: 'string', enum: ['self', 'all'], default: 'self' },
       filterMode: { type: 'string', enum: ['blacklist', 'whitelist'], default: 'blacklist' },
       paths: { type: 'array', items: { type: 'string' }, default: [] },
-      minPeriodMs: { type: 'integer', minimum: 0, default: 0 },
-      labels: { type: 'object', additionalProperties: { type: 'string' }, default: {} },
+      minPeriodMs: { type: 'integer', minimum: 0, default: 5000 },
+      labels: { type: 'object', required: ['job', 'instance'], properties: {
+        job: { type: 'string', minLength: 1 },
+        instance: { type: 'string', minLength: 1 }
+      }, additionalProperties: { type: 'string' } },
       batch: { type: 'object', properties: {
         maxSamples: { type: 'integer', minimum: 1, default: 500 },
-        flushMs: { type: 'integer', minimum: 1, default: 200 },
+        flushMs: { type: 'integer', minimum: 1, default: 1000 },
         maxPendingSamples: { type: 'integer', minimum: 1, default: 10000 }
+      } },
+      cardinalityAlert: { type: 'object', properties: {
+        maxSeriesPerPathPerDay: { type: 'integer', minimum: 2, maximum: 250, default: 100 },
+        excludedPaths: { type: 'array', items: { type: 'string' }, default: [] }
       } }
     } },
     vmagent: { type: 'object', properties: {
       mode: { type: 'string', enum: ['managed-container', 'host-binary'], default: 'managed-container' },
-      imageTag: { type: 'string', default: DEFAULT_IMAGE_TAG },
+      exposeWebUi: { type: 'boolean', default: false },
       binaryPath: { type: 'string' },
       queueLimitBytesPerDestination: { type: 'integer', minimum: 1, default: 1073741824 }
     } },
@@ -41,8 +51,9 @@ export const schema = {
       id: { type: 'string', pattern: '^[a-z0-9][a-z0-9-]*$' },
       kind: { type: 'string', enum: ['victoriametrics', 'prometheus-compatible'] },
       mode: { type: 'string', enum: ['managed-container', 'remote'] },
-      imageTag: { type: 'string', default: DEFAULT_IMAGE_TAG },
+      exposeWebUi: { type: 'boolean', default: false },
       retention: { type: 'string', default: '30d' },
+      auth,
       write: { type: 'object', properties: {
         enabled: { type: 'boolean', default: false },
         url: { type: 'string' }
