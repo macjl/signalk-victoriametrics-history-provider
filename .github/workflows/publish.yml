@@ -56,6 +56,13 @@ jobs:
             exit 1
           fi
 
+      - name: Verify npm package exists
+        run: |
+          if ! npm view "${{ steps.package.outputs.name }}" name >/dev/null; then
+            echo "::error::The package must be published once manually before npm trusted publishing can be configured. See RELEASING.md."
+            exit 1
+          fi
+
       - name: Check npm version
         id: npm
         run: |

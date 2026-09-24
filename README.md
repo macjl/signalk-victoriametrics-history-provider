@@ -23,6 +23,8 @@ endpoint (for example, `http://host:8428/api/v1/write`) and its History base URL
 write-only and must accept Prometheus Remote Write. Multiple write destinations
 are supported, but only one VictoriaMetrics destination can serve History.
 The plugin does not import data written by the old Prometheus exporter.
+Maintainer instructions for npm OIDC are in the
+[release guide](https://github.com/macjl/signalk-victoriametrics-history-provider/blob/main/RELEASING.md).
 
 Current increment supports one `preferred` subscription, conversion to
 Prometheus Remote Write v1, a bounded batch queue, and a Signal K History API
