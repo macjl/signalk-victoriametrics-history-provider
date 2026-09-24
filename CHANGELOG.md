@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.2
+
+- Ignore identical History samples repeated for the same series and timestamp.
+- Report conflicting values for one series and timestamp explicitly, while preserving errors for genuinely mixed scalar and object data.
+
 ## 0.1.1
 
 - Configure a remote VictoriaMetrics with one base URL; derive its History and Remote Write endpoints automatically.

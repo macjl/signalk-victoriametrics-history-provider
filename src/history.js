@@ -282,6 +282,7 @@ export class VictoriaMetricsHistory {
       const byTime = new Map()
       for (const item of series) {
         const parts = item.metric.signalk_leaf === undefined ? null : leafParts(item.metric, spec.path)
+        const seriesKey = JSON.stringify(Object.keys(item.metric).sort().map(name => [name, item.metric[name]]))
         for (let i = 0; i < item.values.length; i++) {
           const timestamp = Number(item.timestamps[i])
           const value = Number(item.values[i])
@@ -291,8 +292,16 @@ export class VictoriaMetricsHistory {
           const groups = byTime.get(bucket)
           const source = item.metric.source ?? ''
           const key = JSON.stringify([timestamp, source])
-          if (!groups.has(key)) groups.set(key, { timestamp, source, entries: [] })
-          groups.get(key).entries.push({ leaf: item.metric.signalk_leaf, parts, value: decodeValue(item.metric, value) })
+          if (!groups.has(key)) groups.set(key, { timestamp, source, entries: [], seen: new Map() })
+          const group = groups.get(key)
+          if (group.seen.has(seriesKey)) {
+            if (group.seen.get(seriesKey) !== value) {
+              throw new Error(`Conflicting History samples for ${spec.path} at ${new Date(timestamp).toISOString()} from ${source}`)
+            }
+            continue
+          }
+          group.seen.set(seriesKey, value)
+          group.entries.push({ leaf: item.metric.signalk_leaf, parts, value: decodeValue(item.metric, value) })
         }
       }
       const snapshots = new Map()

@@ -99,6 +99,32 @@ test('same-timestamp sources use the lexically first source', async () => {
   assert.deepEqual(result.data, [[from, 2]])
 })
 
+test('ignores identical History samples from the same series and timestamp', async () => {
+  const history = provider([
+    { metric: { __name__: 'navigation_headingTrue', source: 'compass' }, values: [1, 1], timestamps: [t, t] },
+    { metric: { source: 'compass', __name__: 'navigation_headingTrue' }, values: [1], timestamps: [t] }
+  ])
+  const result = await history.getValues({ from, to, pathSpecs: [{ path: 'navigation.headingTrue' }] })
+  assert.deepEqual(result.data, [[from, 1]])
+})
+
+test('does not collapse different values from the same series and timestamp', async () => {
+  const history = provider([
+    { metric: { __name__: 'navigation_headingTrue', source: 'compass' }, values: [1, 2], timestamps: [t, t] }
+  ])
+  await assert.rejects(history.getValues({ from, to, pathSpecs: [{ path: 'navigation.headingTrue' }] }),
+    /Conflicting History samples for navigation.headingTrue/)
+})
+
+test('still rejects scalar and object series sharing a timestamp and source', async () => {
+  const history = provider([
+    { metric: { __name__: 'navigation_headingTrue', source: 'compass' }, values: [1], timestamps: [t] },
+    { metric: { __name__: 'navigation_headingTrue_value', source: 'compass', signalk_leaf: 'navigation.headingTrue.value' }, values: [1], timestamps: [t] }
+  ])
+  await assert.rejects(history.getValues({ from, to, pathSpecs: [{ path: 'navigation.headingTrue' }] }),
+    /Mixed scalar and object History values for navigation.headingTrue/)
+})
+
 test('reads existing string states and resolves default average to last', async () => {
   const history = provider([
     { metric: { source: 'autostate', value_str: 'moored' }, values: [1], timestamps: [t] },
