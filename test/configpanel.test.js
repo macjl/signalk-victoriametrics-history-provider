@@ -23,8 +23,12 @@ test('initial configuration retains existing settings and fills missing defaults
   result.ingest.labels.boat = 'beta'
   assert.equal(original.ingest.labels.boat, 'alpha')
   assert.equal(initialConfig(null).ingest.enabled, undefined)
-  assert.equal(initialConfig(null).ingest.minPeriodMs, 5000)
-  assert.equal(initialConfig({ ingest: { minPeriodMs: 0 } }).ingest.minPeriodMs, 0)
+  assert.equal(initialConfig(null).ingest.periodMs, 5000)
+  assert.equal(initialConfig(null).ingest.sourcePolicy, 'preferred')
+  assert.equal(initialConfig(null).ingest.filterMode, 'none')
+  assert.equal(initialConfig({ ingest: { filterMode: 'blacklist', paths: [] } }).ingest.filterMode, 'none')
+  assert.equal(initialConfig({ ingest: { filterMode: 'blacklist', paths: ['navigation.position'] } }).ingest.filterMode, 'blacklist')
+  assert.equal(initialConfig({ ingest: { minPeriodMs: 2500 } }).ingest.periodMs, 2500)
   assert.deepEqual(result.ingest.cardinalityAlert, { maxSeriesPerPathPerDay: 100, excludedPaths: [] })
 })
 
@@ -65,6 +69,7 @@ test('saving validates labels and strips obsolete runtime options', () => {
   const result = prepareSave(config, [])
   assert.deepEqual(result.ingest.labels, { job: 'signalk', instance: 'boat-1' })
   assert.equal(result.ingest.enabled, undefined)
+  assert.equal(result.ingest.minPeriodMs, undefined)
   assert.equal(result.vmagent.imageTag, undefined)
   assert.equal(result.destinations[0].imageTag, undefined)
   assert.deepEqual(config.ingest.labels, { job: 'signalk', instance: 'boat-1' })

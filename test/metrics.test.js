@@ -22,6 +22,14 @@ test('metric name normalization preserves original path in labels', () => {
   })
 })
 
+test('all-source samples retain the source but do not claim preferred status', () => {
+  const samples = deltaToSamples({ context: self, updates: [{ $source: 'gps.backup', values: [
+    { path: 'navigation.speedOverGround', value: 2 }
+  ] }] }, { ...config, sourcePolicy: 'all' }, self, 1234)
+  assert.equal(samples[0].labels.source, 'gps.backup')
+  assert.equal(Object.hasOwn(samples[0].labels, 'preferred'), false)
+})
+
 test('position is written only as a complete pair', () => {
   const delta = { context: self, updates: [{ $source: 'gps', values: [
     { path: 'navigation.position', value: { latitude: 48.1, longitude: -4.1 } }
@@ -41,6 +49,7 @@ test('position is not written partially when one coordinate is filtered', () => 
   ] }] }
   const selected = { ...config, paths: ['navigation.position.latitude'] }
   assert.deepEqual(deltaToSamples(delta, selected, self), [])
+  assert.equal(deltaToSamples(delta, { ...selected, filterMode: 'none' }, self).length, 2)
 })
 
 test('filters original leaves and drops invalid sources and values', () => {

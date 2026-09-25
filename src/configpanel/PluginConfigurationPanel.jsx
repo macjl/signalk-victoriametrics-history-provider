@@ -132,24 +132,37 @@ export default function PluginConfigurationPanel({ configuration, save }) {
                 <option value="self">Own vessel</option><option value="all">All contexts</option>
               </select>
             </Field>
-            <Field label="Path filter">
-              <select style={styles.input} value={ingest.filterMode} onChange={event => updateIngest({ filterMode: event.target.value })}>
-                <option value="blacklist">Exclude listed paths</option><option value="whitelist">Include listed paths only</option>
+            {writing && <Field label="Sources" hint="Preferred follows Signal K priorities. All records each source separately.">
+              <select style={styles.input} value={ingest.sourcePolicy} onChange={event => updateIngest({ sourcePolicy: event.target.value })}>
+                <option value="preferred">Preferred</option><option value="all">All sources</option>
               </select>
-            </Field>
+            </Field>}
           </div>
-          <div style={{ marginTop: 16 }}>
-            <Field label="Signal K paths" hint="One path per line. Leave empty to include all paths when excluding.">
-              <textarea style={styles.textarea} value={pathsText} onChange={event => {
-                setPathsText(event.target.value)
-                updateIngest({ paths: event.target.value.split('\n').map(path => path.trim()).filter(Boolean) })
-              }} />
-            </Field>
-          </div>
+          {writing && <details style={styles.details} defaultOpen={ingest.filterMode !== 'none' && ingest.paths.length > 0}>
+            <summary style={styles.summary}>Advanced path filtering: {ingest.filterMode === 'none' ? 'None' :
+              `${ingest.filterMode === 'blacklist' ? 'Exclude' : 'Include'} ${ingest.paths.length} path${ingest.paths.length === 1 ? '' : 's'}`}</summary>
+            <div style={styles.grid}>
+              <Field label="Path filter">
+                <select style={styles.input} value={ingest.filterMode} onChange={event => updateIngest({ filterMode: event.target.value })}>
+                  <option value="none">None</option>
+                  <option value="blacklist">Exclude listed paths</option>
+                  <option value="whitelist">Include listed paths only</option>
+                </select>
+              </Field>
+            </div>
+            {ingest.filterMode !== 'none' && <div style={{ marginTop: 16 }}>
+              <Field label="Signal K paths" hint="One path per line. An empty exclude list includes all paths.">
+                <textarea style={styles.textarea} value={pathsText} onChange={event => {
+                  setPathsText(event.target.value)
+                  updateIngest({ paths: event.target.value.split('\n').map(path => path.trim()).filter(Boolean) })
+                }} />
+              </Field>
+            </div>}
+          </details>}
           <details style={styles.details}>
             <summary style={styles.summary}>Advanced frequency and batching</summary>
             <div style={styles.grid}>
-              <NumberField label="Minimum period (ms)" value={ingest.minPeriodMs} onChange={minPeriodMs => updateIngest({ minPeriodMs })} />
+              <NumberField label="Sampling period (ms)" min={1} value={ingest.periodMs} onChange={periodMs => updateIngest({ periodMs })} hint="Last update per context, source and path in each period." />
               <NumberField label="Samples per batch" min={1} value={ingest.batch.maxSamples} onChange={maxSamples => updateIngest({ batch: { ...ingest.batch, maxSamples } })} />
               <NumberField label="Flush interval (ms)" min={1} value={ingest.batch.flushMs} onChange={flushMs => updateIngest({ batch: { ...ingest.batch, flushMs } })} />
               <NumberField label="Maximum pending samples" min={1} value={ingest.batch.maxPendingSamples} onChange={maxPendingSamples => updateIngest({ batch: { ...ingest.batch, maxPendingSamples } })} />

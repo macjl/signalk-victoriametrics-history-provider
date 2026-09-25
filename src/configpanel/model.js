@@ -11,13 +11,19 @@ export function initialConfig(configuration = {}) {
   configuration ??= {}
   configuration = withIdentityLabels(configuration).configuration
   const configuredIngest = clone(configuration.ingest ?? {})
+  if (configuredIngest.filterMode === 'blacklist' && !configuredIngest.paths?.length) {
+    configuredIngest.filterMode = 'none'
+  }
+  const periodMs = configuredIngest.periodMs ?? configuredIngest.minPeriodMs ?? 5000
+  delete configuredIngest.minPeriodMs
   return {
     ...clone(configuration),
     ingest: {
       contexts: 'self',
-      filterMode: 'blacklist',
+      filterMode: 'none',
       paths: [],
-      minPeriodMs: 5000,
+      sourcePolicy: 'preferred',
+      periodMs,
       labels: configuration.ingest.labels,
       ...configuredIngest,
       batch: {
@@ -99,6 +105,7 @@ export function prepareSave(configuration, labelRows) {
   candidate.ingest.labels = labels
   if (!candidate.destinations.some(destination => destination.write?.enabled)) candidate.vmagent.exposeWebUi = false
   delete candidate.ingest.enabled
+  delete candidate.ingest.minPeriodMs
   delete candidate.vmagent.imageTag
   for (const destination of candidate.destinations) {
     delete destination.imageTag

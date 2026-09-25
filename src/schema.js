@@ -23,9 +23,10 @@ export const schema = {
   properties: {
     ingest: { type: 'object', properties: {
       contexts: { type: 'string', enum: ['self', 'all'], default: 'self' },
-      filterMode: { type: 'string', enum: ['blacklist', 'whitelist'], default: 'blacklist' },
+      sourcePolicy: { type: 'string', enum: ['preferred', 'all'], default: 'preferred' },
+      filterMode: { type: 'string', enum: ['none', 'blacklist', 'whitelist'], default: 'none' },
       paths: { type: 'array', items: { type: 'string' }, default: [] },
-      minPeriodMs: { type: 'integer', minimum: 0, default: 5000 },
+      periodMs: { type: 'integer', minimum: 1, default: 5000 },
       labels: { type: 'object', required: ['job', 'instance'], properties: {
         job: { type: 'string', minLength: 1 },
         instance: { type: 'string', minLength: 1 }

@@ -51,17 +51,19 @@ export function validateConfig(raw) {
   }
 
   const contexts = ingest.contexts ?? 'self'
-  const filterMode = ingest.filterMode ?? 'blacklist'
+  const filterMode = ingest.filterMode ?? 'none'
   const paths = ingest.paths ?? []
   if (!['self', 'all'].includes(contexts)) throw new Error('ingest.contexts must be self or all')
-  if (!['blacklist', 'whitelist'].includes(filterMode)) throw new Error('Invalid ingest.filterMode')
+  if (!['none', 'blacklist', 'whitelist'].includes(filterMode)) throw new Error('Invalid ingest.filterMode')
   if (!Array.isArray(paths) || paths.some(path => typeof path !== 'string' || !path)) {
     throw new Error('ingest.paths must be an array of paths')
   }
   if (filterMode === 'whitelist' && paths.length === 0) throw new Error('Whitelist cannot be empty')
 
-  const minPeriodMs = ingest.minPeriodMs ?? 5000
-  if (!Number.isSafeInteger(minPeriodMs) || minPeriodMs < 0) throw new Error('Invalid ingest.minPeriodMs')
+  const sourcePolicy = ingest.sourcePolicy ?? 'preferred'
+  if (!['preferred', 'all'].includes(sourcePolicy)) throw new Error('ingest.sourcePolicy must be preferred or all')
+  const periodMs = ingest.periodMs ?? ingest.minPeriodMs ?? 5000
+  if (!Number.isSafeInteger(periodMs) || periodMs <= 0) throw new Error('ingest.periodMs must be positive')
 
   const batch = {
     maxSamples: ingest.batch?.maxSamples ?? 500,
@@ -172,7 +174,7 @@ export function validateConfig(raw) {
     throw new Error('vmagent web UI requires an active write destination')
   }
   return {
-    ingest: { enabled, contexts, filterMode, paths, minPeriodMs, labels, batch, cardinalityAlert },
+    ingest: { enabled, contexts, filterMode, paths, sourcePolicy, periodMs, labels, batch, cardinalityAlert },
     vmagent,
     destinations: normalizedDestinations
   }

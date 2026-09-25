@@ -24,12 +24,14 @@ function rangeFor(query, now = Date.now()) {
 }
 
 function selector(labels) {
-  return `{${Object.entries(labels).map(([name, value]) => `${name}=${JSON.stringify(value)}`).join(',')}}`
+  return `{preferred=~"true|",${Object.entries(labels).map(([name, value]) => `${name}=${JSON.stringify(value)}`).join(',')}}`
 }
 
-function orderedSamples(samples) {
-  return [...samples].sort((a, b) => a.timestamp - b.timestamp || a.source.localeCompare(b.source))
-    .filter((sample, index, all) => index === 0 || sample.timestamp !== all[index - 1].timestamp)
+function orderedSamples(samples, method) {
+  const ordered = [...samples].sort((a, b) => a.timestamp - b.timestamp || a.source.localeCompare(b.source))
+  return ['first', 'last', 'middle_index'].includes(method)
+    ? ordered.filter((sample, index) => index === 0 || sample.timestamp !== ordered[index - 1].timestamp)
+    : ordered
 }
 
 function aggregate(samples, method, angular) {
@@ -57,7 +59,7 @@ function aggregate(samples, method, angular) {
 }
 
 function aggregateValues(samples, method, angular, path) {
-  const ordered = orderedSamples(samples)
+  const ordered = orderedSamples(samples, method)
   if (!ordered.length) return null
   if (method === 'first') return ordered[0].value
   if (method === 'last') return ordered.at(-1).value
@@ -152,7 +154,7 @@ export class VictoriaMetricsHistory {
       throw new Error('History range limit exceeded')
     }
     const params = new URLSearchParams({
-      'match[]': selector({ preferred: 'true', ...this.labels, ...extraLabels }),
+      'match[]': selector({ ...this.labels, ...extraLabels }),
       start: String(range.from / 1000),
       end: String(range.to / 1000)
     })
@@ -222,7 +224,7 @@ export class VictoriaMetricsHistory {
       throw new Error('History range limit exceeded')
     }
     const params = new URLSearchParams({
-      'match[]': selector({ preferred: 'true', ...this.labels }),
+      'match[]': selector(this.labels),
       start: String(range.from / 1000),
       end: String(range.to / 1000),
       limit: String(this.limits.maxSeries + 1)
@@ -261,7 +263,6 @@ export class VictoriaMetricsHistory {
   }
 
   async getValues(query) {
-    if (query.sourcePolicy === 'all') throw new Error('sourcePolicy=all is unavailable: only preferred-stream samples are stored')
     if (!Array.isArray(query.pathSpecs) || !query.pathSpecs.length) throw new Error('History paths are required')
     const range = rangeFor(query)
     const context = query.context === undefined || query.context === 'vessels.self' ? this.selfContext : query.context
@@ -290,7 +291,7 @@ export class VictoriaMetricsHistory {
           const bucket = resolutionMs === undefined ? timestamp : range.from + Math.floor((timestamp - range.from) / resolutionMs) * resolutionMs
           if (!byTime.has(bucket)) byTime.set(bucket, new Map())
           const groups = byTime.get(bucket)
-          const source = item.metric.source ?? ''
+          const source = typeof item.metric.source === 'string' ? item.metric.source : ''
           const key = JSON.stringify([timestamp, source])
           if (!groups.has(key)) groups.set(key, { timestamp, source, entries: [], seen: new Map() })
           const group = groups.get(key)
@@ -305,7 +306,6 @@ export class VictoriaMetricsHistory {
         }
       }
       const snapshots = new Map()
-      let hasTypedValues = false
       for (const [timestamp, groups] of byTime) {
         const samples = [...groups.values()].map(group => {
           if (!position) return { timestamp: group.timestamp, source: group.source, value: reconstructValue(group.entries, spec.path) }
@@ -318,31 +318,50 @@ export class VictoriaMetricsHistory {
           }
         })
         snapshots.set(timestamp, samples)
-        if (!position && samples.some(sample => typeof sample.value !== 'number')) hasTypedValues = true
       }
-      const effectiveMethod = method === 'average' && hasTypedValues ? 'last' : method
-      const result = new Map()
-      for (const [timestamp, samples] of snapshots) {
-        if (!position) {
-          result.set(timestamp, aggregateValues(samples, effectiveMethod, isAngular(spec.path), spec.path))
-          continue
-        }
-        const complete = samples.filter(sample => sample.value !== null)
-          .sort((a, b) => a.timestamp - b.timestamp || a.source.localeCompare(b.source))
-        if (complete.length) {
-          const index = effectiveMethod === 'last' ? complete.length - 1 : effectiveMethod === 'middle_index' ? Math.floor((complete.length - 1) / 2) : 0
-          result.set(timestamp, complete[index].value)
-        } else {
-          result.set(timestamp, null)
+      const bySource = new Map()
+      if (query.sourcePolicy === 'all' || spec.sourceRef) {
+        for (const [timestamp, samples] of snapshots) {
+          for (const sample of samples) {
+            if (spec.sourceRef && sample.source !== spec.sourceRef) continue
+            if (!bySource.has(sample.source)) bySource.set(sample.source, new Map())
+            const sourceSnapshots = bySource.get(sample.source)
+            if (!sourceSnapshots.has(timestamp)) sourceSnapshots.set(timestamp, [])
+            sourceSnapshots.get(timestamp).push(sample)
+          }
         }
       }
-      columns.push({ spec, method: effectiveMethod, result })
+      const sourceRefs = query.sourcePolicy === 'all' && !spec.sourceRef
+        ? [...bySource.keys()].sort()
+        : [spec.sourceRef]
+      for (const sourceRef of sourceRefs) {
+        const selectedSnapshots = sourceRef === undefined ? snapshots : bySource.get(sourceRef) ?? new Map()
+        const hasTypedValues = !position && [...selectedSnapshots.values()].some(samples =>
+          samples.some(sample => typeof sample.value !== 'number'))
+        const effectiveMethod = method === 'average' && hasTypedValues ? 'last' : method
+        const result = new Map()
+        for (const [timestamp, samples] of selectedSnapshots) {
+          if (!position) {
+            result.set(timestamp, aggregateValues(samples, effectiveMethod, isAngular(spec.path), spec.path))
+            continue
+          }
+          const complete = samples.filter(sample => sample.value !== null)
+            .sort((a, b) => a.timestamp - b.timestamp || a.source.localeCompare(b.source))
+          if (complete.length) {
+            const index = effectiveMethod === 'last' ? complete.length - 1 : effectiveMethod === 'middle_index' ? Math.floor((complete.length - 1) / 2) : 0
+            result.set(timestamp, complete[index].value)
+          } else {
+            result.set(timestamp, null)
+          }
+        }
+        columns.push({ spec, sourceRef, method: effectiveMethod, result })
+      }
     }
     const timestamps = new Set(columns.flatMap(column => [...column.result.keys()]))
     return {
       context,
       range: { from: new Date(range.from).toISOString(), to: new Date(range.to).toISOString() },
-      values: columns.map(({ spec, method }) => ({ path: spec.path, method, ...(spec.sourceRef ? { $source: spec.sourceRef } : {}) })),
+      values: columns.map(({ spec, sourceRef, method }) => ({ path: spec.path, method, ...(sourceRef ? { $source: sourceRef } : {}) })),
       data: [...timestamps].sort((a, b) => a - b).map(timestamp => [
         new Date(timestamp).toISOString(), ...columns.map(column => column.result.get(timestamp) ?? null)
       ])

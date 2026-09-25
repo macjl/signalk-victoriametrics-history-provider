@@ -18,13 +18,12 @@ Flux de lecture : `API History Signal K -> plugin -> VictoriaMetrics`.
 Il n'y a ni scrape de Signal K, ni second flux de donnees vers les destinations,
 ni replication a partir d'un VictoriaMetrics. vmagent ne sert jamais la lecture.
 
-En v1, le plugin n'effectue qu'**une souscription** Signal K, avec
-`sourcePolicy: 'preferred'`. Il archive uniquement les valeurs transmises par
-le filtre de priorite du serveur au moment de leur emission. Il ne reconstitue
-pas les sources ecartees. C'est une regression volontaire par rapport au mode
-`all` de `signalk-prometheus-exporter-macjl`. Une evolution de Signal K pourra
-ulterieurement annoter chaque valeur du flux `all` avec sa decision de priorite;
-le support de toutes les sources sera alors une evolution distincte du plugin.
+Le plugin n'effectue qu'**une souscription** Signal K, avec `sourcePolicy`
+configurable en `preferred` (defaut) ou `all`. La politique `fixed` garde le
+dernier update par contexte, source et path sur chaque periode. En mode `all`,
+les valeurs ecartees par la priorite sont archivees, mais le plugin ne sait pas
+lesquelles etaient preferees. Une evolution de Signal K pourra ulterieurement
+annoter le flux `all` avec cette decision.
 Important : `preferred` est le nom de la politique de souscription, pas la
 preuve qu'une regle a designe un gagnant. Sans regle, ou sur un path configure
 en fan-out, Signal K peut laisser passer plusieurs sources. La v1 archive alors
@@ -60,9 +59,10 @@ necessaire. Mode ecriture seule autorise : aucune instance History en lecture.
 {
   "ingest": {
     "contexts": "self",
-    "filterMode": "blacklist",
+    "filterMode": "none",
     "paths": [],
-    "minPeriodMs": 5000,
+    "sourcePolicy": "preferred",
+    "periodMs": 5000,
     "labels": { "job": "signalk-victoriametrics", "instance": "signalk-victoriametrics-<random-hex>" },
     "batch": { "maxSamples": 500, "flushMs": 1000, "maxPendingSamples": 10000 },
     "cardinalityAlert": { "maxSeriesPerPathPerDay": 100, "excludedPaths": [] }
@@ -132,17 +132,21 @@ n'est pas un binaire pilote par le plugin.
 - `contexts`: `self` (defaut) ou `all`. `self` ne prend que le bateau local;
   `all` inclut les autres contextes Signal K. `vessels.self` est remplace par
   le contexte canonique `vessels.<selfId>` avant stockage.
-- `filterMode`: `blacklist` (defaut) ou `whitelist`; `paths` s'applique aux
+- `filterMode`: `none` (defaut), `blacklist` ou `whitelist`; `paths` s'applique aux
   chemins **Signal K d'origine** avant normalisation en nom de metrique. Une
-  liste blanche vide est invalide. Les chemins racines d'objets autorisent
+  liste blanche vide est invalide. En mode `none`, les chemins restent configures
+  mais n'ont aucun effet. Le reglage est dans une section avancee repliable;
+  son resume indique le mode actif et le nombre de chemins. Les chemins racines d'objets autorisent
   leurs sous-champs; un champ exclu ne doit pas etre emis par accident.
-- `minPeriodMs` vaut 5000 par defaut. `0` signifie ne pas demander de reduction
-  de frequence a Signal K. Une valeur positive utilise le `minPeriod` de la
-  souscription : elle transmet le premier delta d'un path, puis au plus un
-  nouveau delta apres chaque delai ecoule depuis le dernier transmis. Les
-  etats intermediaires ou le dernier etat avant une pause peuvent etre perdus.
-  Ce n'est pas un scrape periodique du dernier etat connu. Le batch HTTP reste
-  necessaire : ce reglage ne regroupe pas les series en un seul POST.
+- `sourcePolicy` vaut `preferred` ou `all`. En mode `all`, aucune indication de
+  preference historique n'est deduite du flux brut. `periodMs` vaut 5000 par
+  defaut et doit etre positif. Avec `policy: fixed`, Signal K retient le dernier
+  update recu par contexte, source et path dans chaque fenetre; les updates
+  intermediaires ne sont pas archives. Une source silencieuse n'est pas reecrite.
+  L'ancien `minPeriodMs` est accepte comme valeur de `periodMs` jusqu'au prochain
+  enregistrement; la semantique passe du premier au dernier update de la
+  fenetre. La valeur zero n'est plus admise. Le batch HTTP reste necessaire
+  pour regrouper les series en POST.
 - `labels`: `job` et `instance` sont obligatoires, visibles et modifiables.
   Au premier demarrage, les valeurs absentes sont enregistrees une seule fois :
   `job="signalk-victoriametrics"` et
@@ -153,8 +157,8 @@ n'est pas un binaire pilote par le plugin.
   `__name__`, `context`, `source`, `signalk_path`, `preferred`, `value_str`,
   `signalk_leaf`, `signalk_leaf_parts` et `signalk_value_type`. Valider les
   noms/valeurs et interdire les doublons.
-- Une seule souscription est utilisee, avec `sourcePolicy: 'preferred'` et
-  `policy: 'instant'`; pas de souscription `all`, pas de consultation du cache
+- Une seule souscription est utilisee, avec le `sourcePolicy` configure et
+  `policy: 'fixed'`; pas de seconde souscription, pas de consultation du cache
   des sources pour deviner la preference. Le serveur envoie un snapshot cache
   lors de l'inscription : ignorer ce bootstrap, qui n'est pas une mesure
   nouvelle. La v1 doit tester que le bootstrap est identifiable dans la
@@ -315,18 +319,19 @@ navigation_position_latitude{context="...",source="can0.device",signalk_path="na
 - Utiliser `update.timestamp` en millisecondes; si absent/invalide, utiliser
   l'heure de reception et compter le remplacement. Eviter de renvoyer un
   echantillon identique apres une relecture du cache ou une reprise.
-- Chaque mesure ecrite porte `preferred="true"` pour faciliter une future
-  extension aux sources ecartees et les requetes sur ce flux. Ici `true`
+- Chaque mesure du flux `preferred` porte `preferred="true"`. Ici `true`
   signifie **recu via `sourcePolicy: preferred`**, pas necessairement qu'une
   regle de priorite a selectionne une source : sans regle ou sur un path en
   fan-out, plusieurs sources peuvent toutes porter `true`. Le plugin ne peut
-  pas deduire de distinction plus fine du flux actuel.
-- Un changement de source preferee cree une nouvelle serie `source`, mais une
-  lecture sans filtre `source` reconstitue la suite temporelle des valeurs
-  recues. Des echantillons exactement simultanes entre sources sont resolus
-  par ordre lexicographique de `$source` (premier gagne), et comptes comme
-  collision. Cette regle assure le determinisme; elle ne designe pas une
-  preference quand Signal K n'en a pas designe.
+  pas deduire de distinction plus fine du flux actuel. Le flux `all` omet ce
+  label : il ne signifie ni `true` ni `false`. La lecture accepte `true` ou
+  l'absence du label pour relire les deux modes de collecte.
+- Un changement de source cree une nouvelle serie `source`, mais une lecture
+  sans filtre `source` reunit les valeurs recues. Des echantillons exactement
+  simultanes de sources differentes contribuent tous aux agregats numeriques.
+  Pour `first`, `last` et `middle_index`, seule la premiere source dans l'ordre
+  lexicographique est prise a timestamp egal; cela ne designe pas une
+  preference Signal K.
 - Emettre une metrique de debut de session propre au plugin pour permettre aux
   alertes de distinguer les etats recus avant/apres un redemarrage. Elle ne
   remplace pas l'ancienne metrique de session de l'exporter et la migration des
@@ -337,7 +342,7 @@ navigation_position_latitude{context="...",source="can0.device",signalk_path="na
 Le callback de souscription filtre et convertit sans I/O synchrone. Il ajoute
 les echantillons a une file memoire bornee. Un seul expediteur ordonne les
 lots par serie et les POST vers `vmagent /api/v1/write` (protobuf Prometheus
-v1 + Snappy). `flushMs` vaut 1000 par defaut, independamment de `minPeriodMs`,
+v1 + Snappy). `flushMs` vaut 1000 par defaut, independamment de `periodMs`,
 et reste une option avancee. Les seuils `maxSamples`, `flushMs` et
 `maxPendingSamples` sont configurables et valides; une limite de taille HTTP
 doit aussi etre imposee.
@@ -382,7 +387,8 @@ son `step` reevalue les series et peut masquer des variations entre deux pas.
 `match[]`, `start`, `end` et une limite de resultats; ils ne telechargent pas
 les echantillons. VictoriaMetrics arrondit ces bornes aux jours UTC : une
 valeur decouverte peut ne pas avoir de mesure dans la sous-periode exacte.
-Les selecteurs utilisent `signalk_path`, `context`, `preferred="true"`, les
+Les selecteurs utilisent `signalk_path`, `context`, un matcher acceptant
+`preferred="true"` ou l'absence du label, les
 labels supplementaires du selecteur de lecture et, si demande, `source`.
 Les valeurs de filtre sont echappees; pas de concatenation directe d'entrees
 utilisateur en MetricsQL.
@@ -396,12 +402,16 @@ limite produit une erreur explicite, jamais une reponse tronquee silencieuse.
   actuelle pour filtrer le passe. En l'absence de regle de priorite, plusieurs
   sources peuvent contribuer au meme resultat : ce n'est pas une source
   preferee historique univoque.
-- Avec `PathSpec.sourceRef`, filtrer cette source parmi les seules mesures
-  historiquement recues via la politique `preferred`. Cela **ne** retrouve pas
-  une source ecartee par une regle de priorite.
-- `sourcePolicy=all` est refuse avec un message explicite indiquant que cette
-  version n'archive que les valeurs preferees. Ne pas pretendre retourner
-  toutes les sources. Le serveur transmet l'erreur du provider en HTTP 400.
+- Avec `PathSpec.sourceRef`, filtrer cette source parmi les mesures archivees.
+  Une source ecartee en mode de collecte `preferred` ne peut pas etre retrouvee.
+- `sourcePolicy=all` retourne une colonne par source **stockee** pour chaque
+  path sans filtre `sourceRef`, avec `$source` dans `values`. Les agregats sont
+  calcules separement pour chaque source. Les sources ecartees lors de la
+  collecte `preferred` ne peuvent pas etre restituees; `all` en lecture designe
+  toutes les sources presentes dans l'historique du provider. Un filtre
+  `sourceRef` explicite reste prioritaire et ne cree qu'une colonne. Les series
+  historiques sans label `source` restent lisibles dans une colonne sans
+  `$source`, sans provoquer d'erreur.
 - `navigation.position` est reconstruit a partir du couple longitude/latitude
   de la meme source et du meme timestamp, puis retourne `[longitude, latitude]`
   (ordre GeoJSON). Un couple incomplet retourne `null`, jamais une position
@@ -511,7 +521,8 @@ un TSDB compatible Prometheus distant peut etre une sortie ecriture seule.
    nouveau flux. Adapter les alertes basees sur la metrique de session.
 
 Ce plugin ne remplace pas `signalk-history-prometheus-provider` pour lire un
-Prometheus existant. La lecture filtre `preferred="true"` et les labels
+Prometheus existant. La lecture accepte `preferred="true"` ou son absence,
+et filtre aussi les labels
 supplementaires choisis, mais **ne sait pas distinguer** ses mesures de celles
 de l'ancien exporter si elles ont les memes labels. Il faut isoler les flux
 par configuration ou utiliser une VM dediee. Aucune migration implicite des
@@ -522,11 +533,12 @@ anciennes series n'est promise.
 - Tests unitaires : filtre sur path d'origine, contextes, labels reserves,
   normalisation, valeurs nulles/non finies, flattening, position, timestamps,
   collisions de serie, batch et file bornee.
-- Tests de contrat : un seul abonnement `preferred`; aucun abonnement `all`;
-  aucune mesure ecartee par le serveur stockee; snapshot initial ignore;
+- Tests de contrat : un seul abonnement `fixed`, en collecte `preferred` ou
+  `all`; dernier update par source et periode; snapshot initial ignore;
   plusieurs sources sans regle restent possibles; changement de source lisible
-  sans consulter la preference live; filtre `sourceRef`; refus de
-  `sourcePolicy=all`; label `preferred="true"` sur chaque mesure Signal K;
+  sans consulter la preference live; filtre `sourceRef`; `sourcePolicy=all`
+  separe les sources stockees sans changer la collecte; label `preferred="true"`
+  seulement pour le flux `preferred`;
   `job`/`instance` presents et stables apres le premier demarrage.
 - Tests de cardinalite : serie repetee comptee une fois, seuil 100 par
   defaut, exemption sans effet sur l'ingestion, remise a zero UTC, memoire

@@ -8,6 +8,7 @@ function pathMatches(path, selected) {
 }
 
 function allowed(path, config) {
+  if (config.filterMode === 'none') return true
   const matches = pathMatches(path, config.paths)
   return config.filterMode === 'whitelist' ? matches : !matches
 }
@@ -60,7 +61,7 @@ export function deltaToSamples(delta, config, selfContext, now = Date.now()) {
           context,
           source: update.$source,
           signalk_path: root,
-          preferred: 'true',
+          ...(config.sourcePolicy !== 'all' ? { preferred: 'true' } : {}),
           ...config.labels
         }
         if (leaf.isLeaf) labels.signalk_leaf = leaf.path

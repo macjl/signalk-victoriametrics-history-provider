@@ -13,6 +13,14 @@ import { CardinalityAlert } from './src/cardinality-alert.js'
 
 const id = 'signalk-victoriametrics-history-provider'
 
+export function subscriptionRequest(ingest) {
+  return {
+    context: ingest.contexts === 'self' ? 'vessels.self' : '*',
+    subscribe: [{ path: '*', policy: 'fixed', period: ingest.periodMs }],
+    sourcePolicy: ingest.sourcePolicy
+  }
+}
+
 export default function createPlugin(app) {
   let generation = 0
   let abortController = null
@@ -94,6 +102,7 @@ export default function createPlugin(app) {
     const previous = cleanup(false)
     const identity = withIdentityLabels(raw)
     const options = validateConfig(identity.configuration)
+    const ingestStatus = `Ingesting ${options.ingest.sourcePolicy} Signal K deltas`
     const reader = options.destinations.find(destination => destination.read?.enabled)
     if (options.destinations.some(destination => destination.mode === 'host-binary')) {
       throw new Error('VictoriaMetrics host-binary mode is not implemented yet')
@@ -142,7 +151,7 @@ export default function createPlugin(app) {
             const result = await history[method](query)
             if (historyFailed && current === generation) {
               historyFailed = false
-              reportOperational(options.ingest.enabled ? 'Ingesting preferred Signal K deltas' : 'History provider ready')
+              reportOperational(options.ingest.enabled ? ingestStatus : 'History provider ready')
             }
             return result
           } catch (error) {
@@ -184,23 +193,19 @@ export default function createPlugin(app) {
             await postSamples(address, samples)
             if (agentFailed && !lossError && current === generation) {
               agentFailed = false
-              reportOperational('Ingesting preferred Signal K deltas')
+              reportOperational(ingestStatus)
             }
           },
           onError: error => { if (current === generation) setAgentError(error.message) }
         })
         let bootstrapping = true
-        app.subscriptionmanager.subscribe({
-          context: options.ingest.contexts === 'self' ? 'vessels.self' : '*',
-          subscribe: [{ path: '*', policy: 'instant', minPeriod: options.ingest.minPeriodMs }],
-          sourcePolicy: 'preferred'
-        }, unsubscribes, error => { if (current === generation) setAgentError(String(error)) }, delta => {
+        app.subscriptionmanager.subscribe(subscriptionRequest(options.ingest), unsubscribes, error => { if (current === generation) setAgentError(String(error)) }, delta => {
           if (bootstrapping || current !== generation) return
           const samples = deltaToSamples(delta, options.ingest, selfContext)
           batcher.add(samples)
           if (cardinality.observe(samples)) {
             cardinalityWarning = cardinality.message()
-            reportOperational('Ingesting preferred Signal K deltas')
+            reportOperational(ingestStatus)
           }
         })
         bootstrapping = false
@@ -226,7 +231,7 @@ export default function createPlugin(app) {
           }
         }, 5000)
       }
-      reportOperational(options.ingest.enabled ? 'Ingesting preferred Signal K deltas' : 'History provider ready')
+      reportOperational(options.ingest.enabled ? ingestStatus : 'History provider ready')
     })().catch(async error => {
       if (current === generation) {
         setError(error.message)
@@ -239,7 +244,7 @@ export default function createPlugin(app) {
   return {
     id,
     name: 'VictoriaMetrics History Provider (experimental)',
-    description: 'Store preferred Signal K deltas in VictoriaMetrics and serve History',
+    description: 'Store Signal K deltas in VictoriaMetrics and serve History',
     schema,
     registerWithRouter(router) {
       router.get('/ui/manifest', (_req, res) => {

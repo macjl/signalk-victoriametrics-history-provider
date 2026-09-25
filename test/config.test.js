@@ -40,12 +40,26 @@ test('provisions only absent identity labels', () => {
   assert.strictEqual(second.configuration, first.configuration)
 })
 
-test('defaults to a five-second minimum period but preserves an explicit zero', () => {
+test('defaults to a five-second fixed period and preferred sources', () => {
   const options = base()
-  assert.equal(validateConfig(options).ingest.minPeriodMs, 5000)
-  assert.equal(schema.properties.ingest.properties.minPeriodMs.default, 5000)
-  options.ingest.minPeriodMs = 0
-  assert.equal(validateConfig(options).ingest.minPeriodMs, 0)
+  assert.equal(validateConfig(options).ingest.periodMs, 5000)
+  assert.equal(validateConfig(options).ingest.sourcePolicy, 'preferred')
+  assert.equal(schema.properties.ingest.properties.periodMs.default, 5000)
+  options.ingest.periodMs = 1000
+  options.ingest.sourcePolicy = 'all'
+  assert.equal(validateConfig(options).ingest.periodMs, 1000)
+  assert.equal(validateConfig(options).ingest.sourcePolicy, 'all')
+  options.ingest.periodMs = 0
+  assert.throws(() => validateConfig(options), /periodMs must be positive/)
+  options.ingest.periodMs = 1000
+  options.ingest.sourcePolicy = 'unknown'
+  assert.throws(() => validateConfig(options), /sourcePolicy must be preferred or all/)
+})
+
+test('reads an existing minPeriodMs setting as the fixed period', () => {
+  const options = base()
+  options.ingest.minPeriodMs = 2500
+  assert.equal(validateConfig(options).ingest.periodMs, 2500)
 })
 
 test('defaults to a one-second flush interval but preserves an explicit value', () => {
@@ -139,6 +153,15 @@ test('rejects empty whitelist and unsafe URL credentials', () => {
   options.ingest.paths = ['navigation']
   options.destinations[0].url = 'http://user:secret@localhost:8428'
   assert.throws(() => validateConfig(options), /VictoriaMetrics base URL/)
+})
+
+test('defaults to no path filter and retains paths while filtering is disabled', () => {
+  const options = base()
+  assert.equal(validateConfig(options).ingest.filterMode, 'none')
+  assert.equal(schema.properties.ingest.properties.filterMode.default, 'none')
+  options.ingest.filterMode = 'none'
+  options.ingest.paths = ['navigation.position.latitude']
+  assert.deepEqual(validateConfig(options).ingest.paths, options.ingest.paths)
 })
 
 test('derives VictoriaMetrics read and write endpoints from one base URL', () => {

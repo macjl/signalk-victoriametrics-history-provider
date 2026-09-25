@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.3
+
+- Put path filtering in an advanced section with a no-filter option that retains saved paths.
+- Return source-specific History columns with `sourcePolicy=all` for the preferred-stream samples already stored.
+- Allow collecting all sources with one fixed-period Signal K subscription; keep preferred collection as the default.
+- Sample the last update per context, source and path every five seconds by default in both collection modes.
+
 ## 0.1.2
 
 - Ignore identical History samples repeated for the same series and timestamp.
@@ -20,6 +27,7 @@ First experimental release.
 - Configure destinations, authentication, retention and optional administrator-only web interfaces from the Signal K panel.
 - Warn about high-cardinality paths without dropping their samples; expose vmagent self-scrape metrics.
 
-Known limitations: only the preferred subscription stream is stored; `sourcePolicy=all`,
-managed VictoriaMetrics host binaries, bearer authentication and some History aggregates
-are not supported. Existing Prometheus exporter history is not imported.
+Known limitations at release: only the preferred subscription stream is stored;
+`sourcePolicy=all`, managed VictoriaMetrics host binaries, bearer authentication
+and some History aggregates are not supported. Existing Prometheus exporter
+history is not imported.

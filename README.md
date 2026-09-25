@@ -1,7 +1,7 @@
 # signalk-victoriametrics-history-provider
 
-Experimental first release for Signal K. The [technical specification](SPEC.md)
-describes the longer-term design; this README describes what version 0.1.1
+Experimental Signal K plugin. The [technical specification](SPEC.md)
+describes the longer-term design; this README describes what the current version
 actually supports.
 
 ## Installation
@@ -27,7 +27,8 @@ The plugin does not import data written by the old Prometheus exporter.
 Maintainer instructions for npm OIDC are in the
 [release guide](https://github.com/macjl/signalk-victoriametrics-history-provider/blob/main/RELEASING.md).
 
-Current increment supports one `preferred` subscription, conversion to
+Current increment supports one subscription with `preferred` or `all` source
+collection, conversion to
 Prometheus Remote Write v1, a bounded batch queue, and a Signal K History API
 provider reading raw VictoriaMetrics samples. VictoriaMetrics and vmagent can
 be run as managed containers through `signalk-container-helper`; vmagent can
@@ -49,6 +50,24 @@ reports `method: last` in the response. `:first`, `:last` and `:middle_index`
 remain available explicitly; numeric-only paths still use numeric `average`.
 Boolean and date values written before type labels were added remain numeric
 in existing history.
+
+`sourcePolicy=all` returns a separate History column for each source found in
+the selected period, with its `$source` in `values`. Aggregation is performed
+per source; an explicit `path|sourceRef` filter still returns only that source.
+The ingestion setting defaults to `preferred`. Selecting `all` records each
+source independently, sampled with Signal K's `fixed` policy (5 seconds by
+default). Each source with an update in a window contributes its last update;
+intermediate updates are not stored. Data collected earlier in `preferred`
+mode cannot recover sources excluded by Signal K's priority rules.
+`preferred="true"` marks older and new preferred-stream samples only; samples
+collected in `all` mode have no preferred label because their historical
+priority is unknown. Without History `sourcePolicy=all`, the merged column
+aggregates the stored sources, including simultaneous samples, and does not
+identify which source supplied each row. Historical
+series without a `source` label remain readable in a column without `$source`.
+The former `minPeriodMs` setting is accepted as the new `periodMs` until the
+configuration is saved. This changes sampling from the first update after a
+delay to the last update in each fixed window. A zero period is not supported.
 
 History values use raw `/api/v1/export` samples. Context and path discovery
 uses VictoriaMetrics label-value queries, so discovery no longer downloads all

@@ -58,10 +58,21 @@ test('reads raw values across source changes and filters by historical source', 
     [from, 1], ['2026-09-23T12:00:01.000Z', 2]
   ])
   assert.equal(result.values[0].method, 'average')
-  assert.match(selector, /preferred="true"/)
+  assert.match(selector, /preferred=~"true\|"/)
   assert.match(selector, /instance="boat-1"/)
   await history.getValues({ from, to, pathSpecs: [{ path: 'navigation.speedOverGround', sourceRef: 'a' }] })
   assert.match(selector, /source="a"/)
+})
+
+test('resolves vessels.self to the canonical context in History queries', async () => {
+  let selector
+  const history = provider([{ metric: { source: 'gps' }, values: [2], timestamps: [t] }], url => {
+    selector = url.searchParams.get('match[]')
+  })
+  const result = await history.getValues({ context: 'vessels.self', from, to,
+    pathSpecs: [{ path: 'navigation.speedOverGround' }] })
+  assert.equal(result.context, 'vessels.boat')
+  assert.match(selector, /context="vessels.boat"/)
 })
 
 test('position pairs only same timestamp and source', async () => {
@@ -74,11 +85,92 @@ test('position pairs only same timestamp and source', async () => {
   assert.deepEqual(result.data, [[from, [-4, 48]], ['2026-09-23T12:00:01.000Z', null]])
 })
 
-test('resolution buckets samples and rejects all-sources request', async () => {
+test('resolution buckets samples in the default merged column', async () => {
   const history = provider([{ metric: { source: 'a' }, values: [2, 4], timestamps: [t, t + 1000] }])
   const result = await history.getValues({ from, to, resolution: 2, pathSpecs: [{ path: 'navigation.speedOverGround', aggregate: 'average' }] })
   assert.deepEqual(result.data, [[from, 3]])
-  await assert.rejects(history.getValues({ from, to, sourcePolicy: 'all', pathSpecs: [{ path: 'navigation.speedOverGround' }] }), /unavailable/)
+})
+
+test('sourcePolicy=all splits stored sources into aligned columns', async () => {
+  const rows = [
+    { metric: { source: 'b' }, values: [10, 20], timestamps: [t, t + 1000] },
+    { metric: { source: 'a' }, values: [2, 4], timestamps: [t, t + 2000] }
+  ]
+  let selector
+  const history = provider(rows, url => { selector = url.searchParams.get('match[]') })
+  const query = { from, to, sourcePolicy: 'all', pathSpecs: [{ path: 'navigation.speedOverGround' }] }
+  const result = await history.getValues(query)
+  assert.deepEqual(result.values, [
+    { path: 'navigation.speedOverGround', method: 'average', $source: 'a' },
+    { path: 'navigation.speedOverGround', method: 'average', $source: 'b' }
+  ])
+  assert.deepEqual(result.data, [
+    [from, 2, 10], ['2026-09-23T12:00:01.000Z', null, 20], ['2026-09-23T12:00:02.000Z', 4, null]
+  ])
+  assert.match(selector, /preferred=~"true\|"/)
+  assert.doesNotMatch(selector, /source=/)
+
+  const bucketed = await history.getValues({ ...query, resolution: 2 })
+  assert.deepEqual(bucketed.data, [[from, 2, 15], ['2026-09-23T12:00:02.000Z', 4, null]])
+
+  const filtered = await history.getValues({ ...query, pathSpecs: [{ path: 'navigation.speedOverGround', sourceRef: 'b' }] })
+  assert.deepEqual(filtered.values, [{ path: 'navigation.speedOverGround', method: 'average', $source: 'b' }])
+  assert.deepEqual(filtered.data, [[from, 10], ['2026-09-23T12:00:01.000Z', 20]])
+  assert.match(selector, /source="b"/)
+})
+
+test('sourcePolicy=all preserves path order and per-source aggregate methods', async () => {
+  const history = new VictoriaMetricsHistory({
+    baseUrl: 'http://localhost:8428', selfContext: 'vessels.boat',
+    fetchImpl: async url => {
+      const path = new URL(url).searchParams.get('match[]').includes('signalk_path="navigation.state"')
+      const rows = path
+        ? [
+            { metric: { source: 'a' }, values: [2, 4], timestamps: [t, t + 1000] },
+            { metric: { source: 'b', value_str: 'sailing' }, values: [1], timestamps: [t + 1000] }
+          ]
+        : [{ metric: { source: 'gps' }, values: [3], timestamps: [t] }]
+      return new Response(rows.map(row => JSON.stringify(row)).join('\n'))
+    }
+  })
+  const result = await history.getValues({ from, to, resolution: 2, sourcePolicy: 'all', pathSpecs: [
+    { path: 'navigation.state' }, { path: 'navigation.speedOverGround' }
+  ] })
+  assert.deepEqual(result.values, [
+    { path: 'navigation.state', method: 'average', $source: 'a' },
+    { path: 'navigation.state', method: 'last', $source: 'b' },
+    { path: 'navigation.speedOverGround', method: 'average', $source: 'gps' }
+  ])
+  assert.deepEqual(result.data, [[from, 3, 'sailing', 3]])
+})
+
+test('sourcePolicy=all pairs positions only within each stored source', async () => {
+  const history = provider([
+    { metric: { source: 'a', signalk_leaf: 'navigation.position.longitude' }, values: [-4], timestamps: [t] },
+    { metric: { source: 'a', signalk_leaf: 'navigation.position.latitude' }, values: [48], timestamps: [t] },
+    { metric: { source: 'b', signalk_leaf: 'navigation.position.longitude' }, values: [-5, -6], timestamps: [t, t + 1000] },
+    { metric: { source: 'b', signalk_leaf: 'navigation.position.latitude' }, values: [49], timestamps: [t] }
+  ])
+  const result = await history.getValues({ from, to, sourcePolicy: 'all', pathSpecs: [{ path: 'navigation.position' }] })
+  assert.deepEqual(result.values, [
+    { path: 'navigation.position', method: 'first', $source: 'a' },
+    { path: 'navigation.position', method: 'first', $source: 'b' }
+  ])
+  assert.deepEqual(result.data, [[from, [-4, 48], [-5, 49]], ['2026-09-23T12:00:01.000Z', null, null]])
+})
+
+test('sourcePolicy=all keeps source-less samples without treating them as an error', async () => {
+  const query = { from, to, sourcePolicy: 'all', pathSpecs: [{ path: 'navigation.headingTrue' }] }
+  assert.deepEqual((await provider([]).getValues(query)).values, [])
+  const result = await provider([
+    { metric: { source: 'compass' }, values: [2], timestamps: [t] },
+    { metric: {}, values: [1], timestamps: [t] }
+  ]).getValues(query)
+  assert.deepEqual(result.values, [
+    { path: 'navigation.headingTrue', method: 'average' },
+    { path: 'navigation.headingTrue', method: 'average', $source: 'compass' }
+  ])
+  assert.deepEqual(result.data, [[from, 1, 2]])
 })
 
 test('averages common Signal K angle paths across zero', async () => {
@@ -90,13 +182,15 @@ test('averages common Signal K angle paths across zero', async () => {
   }
 })
 
-test('same-timestamp sources use the lexically first source', async () => {
+test('same-timestamp sources are both included in numeric aggregates', async () => {
   const history = provider([
     { metric: { source: 'z' }, values: [100], timestamps: [t] },
     { metric: { source: 'a' }, values: [2], timestamps: [t] }
   ])
   const result = await history.getValues({ from, to, pathSpecs: [{ path: 'navigation.speedOverGround', aggregate: 'average' }] })
-  assert.deepEqual(result.data, [[from, 2]])
+  assert.deepEqual(result.data, [[from, 51]])
+  const first = await history.getValues({ from, to, pathSpecs: [{ path: 'navigation.speedOverGround', aggregate: 'first' }] })
+  assert.deepEqual(first.data, [[from, 2]])
 })
 
 test('ignores identical History samples from the same series and timestamp', async () => {
