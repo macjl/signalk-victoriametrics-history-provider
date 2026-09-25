@@ -1,6 +1,6 @@
 {
   "name": "signalk-victoriametrics-history-provider",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "type": "module",
   "description": "Experimental Signal K history provider backed by VictoriaMetrics",
   "main": "index.js",

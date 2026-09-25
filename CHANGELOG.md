@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.4
+
+- Return the last exported sample when a series has conflicting values at the same timestamp, instead of failing the entire History query.
+
 ## 0.1.3
 
 - Put path filtering in an advanced section with a no-filter option that retains saved paths.

@@ -295,14 +295,13 @@ export class VictoriaMetricsHistory {
           const key = JSON.stringify([timestamp, source])
           if (!groups.has(key)) groups.set(key, { timestamp, source, entries: [], seen: new Map() })
           const group = groups.get(key)
+          const entry = { leaf: item.metric.signalk_leaf, parts, value: decodeValue(item.metric, value) }
           if (group.seen.has(seriesKey)) {
-            if (group.seen.get(seriesKey) !== value) {
-              throw new Error(`Conflicting History samples for ${spec.path} at ${new Date(timestamp).toISOString()} from ${source}`)
-            }
+            group.entries[group.seen.get(seriesKey)] = entry
             continue
           }
-          group.seen.set(seriesKey, value)
-          group.entries.push({ leaf: item.metric.signalk_leaf, parts, value: decodeValue(item.metric, value) })
+          group.seen.set(seriesKey, group.entries.length)
+          group.entries.push(entry)
         }
       }
       const snapshots = new Map()

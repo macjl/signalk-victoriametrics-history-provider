@@ -202,12 +202,22 @@ test('ignores identical History samples from the same series and timestamp', asy
   assert.deepEqual(result.data, [[from, 1]])
 })
 
-test('does not collapse different values from the same series and timestamp', async () => {
+test('uses the last exported value from the same series and timestamp', async () => {
   const history = provider([
-    { metric: { __name__: 'navigation_headingTrue', source: 'compass' }, values: [1, 2], timestamps: [t, t] }
+    { metric: { __name__: 'navigation_headingTrue', source: 'compass' }, values: [1, 2], timestamps: [t, t] },
+    { metric: { source: 'compass', __name__: 'navigation_headingTrue' }, values: [3], timestamps: [t] }
   ])
-  await assert.rejects(history.getValues({ from, to, pathSpecs: [{ path: 'navigation.headingTrue' }] }),
-    /Conflicting History samples for navigation.headingTrue/)
+  const result = await history.getValues({ from, to, pathSpecs: [{ path: 'navigation.headingTrue' }] })
+  assert.deepEqual(result.data, [[from, 3]])
+})
+
+test('uses the last exported position leaves for duplicate timestamps', async () => {
+  const history = provider([
+    { metric: { source: 'gps', signalk_leaf: 'navigation.position.longitude' }, values: [-4, -5], timestamps: [t, t] },
+    { metric: { source: 'gps', signalk_leaf: 'navigation.position.latitude' }, values: [48, 49], timestamps: [t, t] }
+  ])
+  const result = await history.getValues({ from, to, pathSpecs: [{ path: 'navigation.position' }] })
+  assert.deepEqual(result.data, [[from, [-5, 49]]])
 })
 
 test('still rejects scalar and object series sharing a timestamp and source', async () => {
