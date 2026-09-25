@@ -208,7 +208,28 @@ test('accepts one Basic Auth credential pair for a remote destination', () => {
   const options = base()
   options.destinations[0].auth = { type: 'basic', username: 'boat', password: 'secret:with:colons' }
   assert.deepEqual(validateConfig(options).destinations[0].auth, options.destinations[0].auth)
-  assert.equal(schema.properties.destinations.items.properties.auth.properties.password.format, 'password')
+  assert.equal(schema.properties.destinations.items.properties.auth.oneOf[0].properties.password.format, 'password')
+})
+
+test('accepts one bearer token for a remote destination', () => {
+  const options = base()
+  options.destinations[0].auth = { type: 'bearer', token: 'opaque.token-123' }
+  assert.deepEqual(validateConfig(options).destinations[0].auth, options.destinations[0].auth)
+  assert.equal(schema.properties.destinations.items.properties.auth.oneOf[1].properties.token.format, 'password')
+})
+
+test('rejects invalid or mixed bearer credentials', () => {
+  const options = base()
+  options.destinations[0].auth = { type: 'bearer', token: '' }
+  assert.throws(() => validateConfig(options), /invalid bearer token/)
+  options.destinations[0].auth.token = 'bad\nvalue'
+  assert.throws(() => validateConfig(options), /invalid bearer token/)
+  options.destinations[0].auth.token = 'opaque.token'
+  options.destinations[0].auth.username = 'boat'
+  assert.throws(() => validateConfig(options), /invalid bearer token/)
+  delete options.destinations[0].auth.username
+  options.destinations[0].mode = 'managed-container'
+  assert.throws(() => validateConfig(options), /invalid authentication/)
 })
 
 test('rejects incomplete or inapplicable Basic Auth', () => {
@@ -220,7 +241,7 @@ test('rejects incomplete or inapplicable Basic Auth', () => {
   assert.throws(() => validateConfig(options), /invalid Basic Auth/)
   options.destinations[0].auth.username = 'boat'
   options.destinations[0].mode = 'managed-container'
-  assert.throws(() => validateConfig(options), /invalid Basic Auth/)
+  assert.throws(() => validateConfig(options), /invalid authentication/)
 })
 
 test('web interfaces are opt-in and limited to managed services', () => {

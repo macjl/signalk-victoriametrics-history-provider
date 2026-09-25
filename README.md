@@ -32,10 +32,11 @@ collection, conversion to
 Prometheus Remote Write v1, a bounded batch queue, and a Signal K History API
 provider reading raw VictoriaMetrics samples. VictoriaMetrics and vmagent can
 be run as managed containers through `signalk-container-helper`; vmagent can
-also use an installed host binary. Remote destinations support no authentication
-or one Basic Auth credential pair shared by Remote Write and History reads.
-Managed host-binary VictoriaMetrics, bearer authentication, rich vmagent queue
-diagnostics, and some History aggregates are not yet implemented.
+also use an installed host binary. Remote destinations support no authentication,
+one Basic Auth credential pair, or one bearer token shared by Remote Write and
+History reads. Managed host-binary VictoriaMetrics and rich vmagent queue
+diagnostics are not yet implemented. Some aggregates remain unsupported for
+non-numeric paths.
 Unsupported configuration is rejected at startup.
 
 Managed-container mode requires the `signalk-container` plugin and its
@@ -50,6 +51,20 @@ reports `method: last` in the response. `:first`, `:last` and `:middle_index`
 remain available explicitly; numeric-only paths still use numeric `average`.
 Boolean and date values written before type labels were added remain numeric
 in existing history.
+Numeric History supports `average`, `min`, `max`, `first`, `last`, `mid` and
+`middle_index`, plus `sma:N` (last N samples, default 5) and `ema:alpha`
+(exponential smoothing, default alpha 0.2). Both smooth raw samples in timestamp
+order, starting at the first sample within the requested range. SMA uses a
+partial window until N samples are available; EMA starts at the first sample's
+value. A bucket returns its last smoothed value. Changing `from` may change
+the first results because earlier samples are not used as warm-up. Only paths
+whose Signal K metadata declares `units: rad` use circular `average`, SMA and
+EMA; missing metadata uses arithmetic aggregation. Circular results are
+normalized to `[0, 2π)`, even for paths whose raw angles may be signed. The
+requested `from` and `to` timestamps are both inclusive.
+Positions support only `first`, `last` and `middle_index`;
+averaging coordinates would not produce a recorded position. Non-numeric values
+cannot use numeric-only aggregates.
 
 `sourcePolicy=all` returns a separate History column for each source found in
 the selected period, with its `$source` in `values`. Aggregation is performed
@@ -120,13 +135,15 @@ destination. The series use `job="signalk-vmagent"`, the vessel context, and an
 `instance` label from the saved plugin configuration.
 Read-only mode does not start vmagent and therefore has no self-scrape.
 
-For an external destination, select **Basic Auth** under its URL and enter
-the username and password. Remote Write uses private credential files read by
-vmagent; History requests send an HTTP Basic Authorization header. The password
-is also stored in the Signal K plugin configuration, so access to that
-configuration must be restricted to administrators.
+For an external destination, select **Basic Auth** or **Bearer token** under its
+URL and enter the credential. The same credential is used for Remote Write and
+History when both are enabled. Remote Write uses private credential files read
+by vmagent; History requests send the corresponding HTTP Authorization header.
+The credential is also stored in the Signal K plugin configuration, so access
+to that configuration must be restricted to administrators. Use HTTPS for
+remote servers.
 On Windows, Unix file modes do not protect these files; restrict the Signal K
-data directory with Windows ACLs before configuring Basic Auth.
+data directory with Windows ACLs before configuring either authentication mode.
 
 For a managed VictoriaMetrics destination, an empty retention field requests
 no planned expiry. VictoriaMetrics has no truly unlimited retention, so the

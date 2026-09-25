@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.5
+
+- Support bearer-token authentication for remote destinations, shared by Remote Write and History.
+- Support sample-count SMA and exponential EMA for numeric History paths, including circular angle smoothing.
+- Include samples at the History `to` boundary and use Signal K `rad` metadata, not path names, for circular aggregates.
+
 ## 0.1.4
 
 - Return the last exported sample when a series has conflicting values at the same timestamp, instead of failing the entire History query.

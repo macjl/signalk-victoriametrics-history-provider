@@ -115,6 +115,18 @@ test('credentials follow the remote destination regardless of read/write usage',
   assert.equal(selectMode(destination, 'remote').auth.username, 'boat')
 })
 
+test('bearer token survives configuration save and read-only selection', () => {
+  const config = initialConfig({ destinations: [{
+    id: 'remote', kind: 'victoriametrics', mode: 'remote', url: 'https://vm.example',
+    auth: { type: 'bearer', token: 'opaque.token' },
+    write: { enabled: true }, read: { enabled: true }
+  }] })
+  const readOnly = setDestinationUsage(config.destinations, 0, 'read')[0]
+  assert.equal(readOnly.auth.token, 'opaque.token')
+  config.destinations = [readOnly]
+  assert.deepEqual(prepareSave(config, []).destinations[0].auth, { type: 'bearer', token: 'opaque.token' })
+})
+
 test('switching a managed destination to remote clears its web UI exposure', () => {
   const destination = { mode: 'managed-container', exposeWebUi: true }
   assert.equal(selectMode(destination, 'remote').exposeWebUi, false)

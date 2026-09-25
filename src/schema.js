@@ -1,8 +1,14 @@
-const auth = { type: 'object', required: ['type', 'username', 'password'], properties: {
-  type: { type: 'string', enum: ['basic'] },
-  username: { type: 'string' },
-  password: { type: 'string', format: 'password' }
-} }
+const auth = { type: 'object', oneOf: [
+  { title: 'Basic Auth', required: ['type', 'username', 'password'], properties: {
+    type: { const: 'basic' },
+    username: { type: 'string' },
+    password: { type: 'string', format: 'password' }
+  } },
+  { title: 'Bearer token', required: ['type', 'token'], properties: {
+    type: { const: 'bearer' },
+    token: { type: 'string', format: 'password' }
+  } }
+] }
 
 const read = {
   type: 'object',

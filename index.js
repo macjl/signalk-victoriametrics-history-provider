@@ -144,7 +144,8 @@ export default function createPlugin(app) {
           auth: reader.auth,
           labels: options.ingest.labels,
           limits: reader.read.limits,
-          selfContext
+          selfContext,
+          getMetadata: path => app.getMetadata?.(path)
         })
         const guarded = Object.fromEntries(['getValues', 'getContexts', 'getPaths'].map(method => [method, async query => {
           try {

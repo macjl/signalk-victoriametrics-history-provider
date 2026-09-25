@@ -70,6 +70,63 @@ function aggregateValues(samples, method, angular, path) {
   return aggregate(ordered, method, angular)
 }
 
+function smoothingParameter(method, parameter) {
+  const values = parameter ?? []
+  if (!Array.isArray(values) || values.length > 1) throw new Error(`Invalid History ${method} parameter`)
+  if (!values.length) return method === 'sma' ? 5 : 0.2
+  const value = Number(values[0])
+  if (method === 'sma' && Number.isSafeInteger(value) && value > 0) return value
+  if (method === 'ema' && Number.isFinite(value) && value > 0 && value <= 1) return value
+  throw new Error(`Invalid History ${method} parameter`)
+}
+
+function smoothSnapshots(snapshots, method, parameter, angular, path) {
+  const events = [...snapshots].flatMap(([bucket, samples]) =>
+    samples.map(sample => ({ ...sample, bucket })))
+    .sort((a, b) => a.timestamp - b.timestamp || a.source.localeCompare(b.source))
+  const result = new Map()
+  if (!events.length) return result
+  const window = method === 'sma' ? new Array(Math.min(parameter, events.length)) : undefined
+  let sum = 0
+  let sine = 0
+  let cosine = 0
+  for (let index = 0; index < events.length; index++) {
+    const { value, bucket } = events[index]
+    if (typeof value !== 'number') {
+      throw new Error(`Unsupported History aggregate for ${path}: ${method} requires numeric values; use :first, :last or :middle_index`)
+    }
+    if (method === 'sma') {
+      if (index >= parameter) {
+        const expired = window[index % window.length]
+        if (angular) {
+          sine -= Math.sin(expired)
+          cosine -= Math.cos(expired)
+        } else {
+          sum -= expired
+        }
+      }
+      window[index % window.length] = value
+      if (angular) {
+        sine += Math.sin(value)
+        cosine += Math.cos(value)
+      } else {
+        sum += value
+      }
+    } else if (angular) {
+      sine = index === 0 ? Math.sin(value) : parameter * Math.sin(value) + (1 - parameter) * sine
+      cosine = index === 0 ? Math.cos(value) : parameter * Math.cos(value) + (1 - parameter) * cosine
+    } else {
+      sum = index === 0 ? value : parameter * value + (1 - parameter) * sum
+    }
+    const count = method === 'sma' ? Math.min(index + 1, parameter) : 1
+    const smoothed = angular
+      ? Math.hypot(sine, cosine) / count < 1e-10 ? null : (Math.atan2(sine, cosine) + 2 * Math.PI) % (2 * Math.PI)
+      : sum / count
+    result.set(bucket, smoothed)
+  }
+  return result
+}
+
 function decodeValue(metric, value) {
   const type = metric.signalk_value_type
   if (type === 'null') return null
@@ -132,21 +189,17 @@ function reconstructValue(entries, path) {
   return root
 }
 
-function isAngular(path) {
-  const leaf = path.split('.').at(-1)
-  return /(?:angle|heading|course|direction|variation|bearing|azimuth)/i.test(leaf)
-}
-
 export class VictoriaMetricsHistory {
-  constructor({ baseUrl, labels = {}, limits = {}, selfContext, auth, fetchImpl = fetch }) {
+  constructor({ baseUrl, labels = {}, limits = {}, selfContext, auth, getMetadata = () => undefined, fetchImpl = fetch }) {
     this.baseUrl = baseUrl.replace(/\/+$/, '')
     this.labels = labels
     this.limits = { ...DEFAULT_LIMITS, ...limits }
     this.selfContext = selfContext
     this.fetchImpl = fetchImpl
+    this.getMetadata = getMetadata
     this.authHeader = auth?.type === 'basic'
       ? `Basic ${Buffer.from(`${auth.username}:${auth.password}`).toString('base64')}`
-      : undefined
+      : auth?.type === 'bearer' ? `Bearer ${auth.token}` : undefined
   }
 
   async exportSeries(extraLabels, range) {
@@ -156,7 +209,7 @@ export class VictoriaMetricsHistory {
     const params = new URLSearchParams({
       'match[]': selector({ ...this.labels, ...extraLabels }),
       start: String(range.from / 1000),
-      end: String(range.to / 1000)
+      end: String((range.to + 1) / 1000)
     })
     const response = await this.fetchImpl(`${this.baseUrl}/api/v1/export?${params}`, {
       signal: AbortSignal.timeout(this.limits.timeoutMs),
@@ -275,8 +328,10 @@ export class VictoriaMetricsHistory {
       const position = spec.path === 'navigation.position'
       const method = spec.aggregate ?? (position ? 'first' : 'average')
       const supported = position ? ['first', 'last', 'middle_index'] :
-        ['average', 'min', 'max', 'first', 'last', 'mid', 'middle_index']
+        ['average', 'min', 'max', 'first', 'last', 'mid', 'middle_index', 'sma', 'ema']
       if (!supported.includes(method)) throw new Error(`Unsupported History aggregate for ${spec.path}: ${method}`)
+      const smoothing = method === 'sma' || method === 'ema' ? smoothingParameter(method, spec.parameter) : undefined
+      const angular = this.getMetadata(`${context}.${spec.path}`)?.units === 'rad'
       const labels = { context, signalk_path: spec.path }
       if (spec.sourceRef) labels.source = spec.sourceRef
       const series = await this.exportSeries(labels, range)
@@ -287,7 +342,7 @@ export class VictoriaMetricsHistory {
         for (let i = 0; i < item.values.length; i++) {
           const timestamp = Number(item.timestamps[i])
           const value = Number(item.values[i])
-          if (!Number.isFinite(timestamp) || !Number.isFinite(value) || timestamp < range.from || timestamp >= range.to) continue
+          if (!Number.isFinite(timestamp) || !Number.isFinite(value) || timestamp < range.from || timestamp > range.to) continue
           const bucket = resolutionMs === undefined ? timestamp : range.from + Math.floor((timestamp - range.from) / resolutionMs) * resolutionMs
           if (!byTime.has(bucket)) byTime.set(bucket, new Map())
           const groups = byTime.get(bucket)
@@ -338,10 +393,14 @@ export class VictoriaMetricsHistory {
         const hasTypedValues = !position && [...selectedSnapshots.values()].some(samples =>
           samples.some(sample => typeof sample.value !== 'number'))
         const effectiveMethod = method === 'average' && hasTypedValues ? 'last' : method
+        if (smoothing !== undefined) {
+          columns.push({ spec, sourceRef, method, result: smoothSnapshots(selectedSnapshots, method, smoothing, angular, spec.path) })
+          continue
+        }
         const result = new Map()
         for (const [timestamp, samples] of selectedSnapshots) {
           if (!position) {
-            result.set(timestamp, aggregateValues(samples, effectiveMethod, isAngular(spec.path), spec.path))
+            result.set(timestamp, aggregateValues(samples, effectiveMethod, angular, spec.path))
             continue
           }
           const complete = samples.filter(sample => sample.value !== null)

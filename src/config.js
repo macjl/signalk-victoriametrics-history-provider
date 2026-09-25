@@ -7,12 +7,21 @@ const isObject = value => value !== null && typeof value === 'object' && !Array.
 
 function validateAuth(auth, destination) {
   if (auth === undefined) return
-  if (destination.mode !== 'remote' ||
-      !isObject(auth) || auth.type !== 'basic' ||
-      typeof auth.username !== 'string' || !auth.username || /[:\r\n\0]/.test(auth.username) ||
-      typeof auth.password !== 'string' || !auth.password || /[\r\n\0]/.test(auth.password)) {
+  if (destination.mode !== 'remote' || !isObject(auth)) {
+    throw new Error(`Destination ${destination.id} has invalid authentication`)
+  }
+  if (auth.type === 'basic') {
+    if (typeof auth.username === 'string' && auth.username && !/[:\r\n\0]/.test(auth.username) &&
+        typeof auth.password === 'string' && auth.password && !/[\r\n\0]/.test(auth.password) &&
+        !Object.hasOwn(auth, 'token')) return
     throw new Error(`Destination ${destination.id} has invalid Basic Auth credentials`)
   }
+  if (auth.type === 'bearer') {
+    if (typeof auth.token === 'string' && /^[\x21-\x7e]+$/.test(auth.token) &&
+        !Object.hasOwn(auth, 'username') && !Object.hasOwn(auth, 'password')) return
+    throw new Error(`Destination ${destination.id} has invalid bearer token`)
+  }
+  throw new Error(`Destination ${destination.id} has invalid authentication type`)
 }
 
 export function normalizeRetention(value, id) {

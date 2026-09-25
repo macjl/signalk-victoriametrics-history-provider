@@ -221,15 +221,16 @@ n'est pas un binaire pilote par le plugin.
   repli vers Prometheus Remote Write pour les recepteurs non VictoriaMetrics.
   Aucun choix de protocole ni option `force*Proto` n'est expose en v1. Pour
   un vrai serveur Prometheus, son recepteur Remote Write doit etre active.
-- Authentification des destinations distantes en v1 : aucune ou un couple
-  Basic Auth `destination.auth` partage par l'ecriture et la lecture History.
-  TLS est valide par defaut. Bearer token, CA personnalisee et identifiants
-  distincts pour la lecture et l'ecriture sont differes. Les secrets sont
-  rediges dans les logs/statuts. Ecrire les identifiants d'ecriture dans des
-  fichiers prives sous le repertoire du plugin, accessibles au vmagent gere
-  ou `host-binary`, puis utiliser ses options `*File`. Ne pas mettre de mots
-  de passe dans les arguments ou URLs. Le mot de passe reste stocke dans la
-  configuration Signal K du plugin, accessible aux administrateurs.
+- Authentification des destinations distantes : aucune, un couple Basic Auth
+  `{ "type": "basic", "username": "...", "password": "..." }` ou un token
+  `{ "type": "bearer", "token": "..." }` dans `destination.auth`, partage par
+  l'ecriture et la lecture History. TLS est valide par defaut. CA personnalisee
+  et identifiants distincts pour la lecture et l'ecriture sont differes. Les
+  secrets sont rediges dans les logs/statuts. Ecrire les identifiants d'ecriture
+  dans des fichiers prives sous le repertoire du plugin, accessibles au vmagent
+  gere ou `host-binary`, puis utiliser ses options `*File`. Ne pas mettre de
+  secrets dans les arguments ou URLs. Ils restent stockes dans la configuration
+  Signal K du plugin, accessible aux administrateurs.
 - `queueLimitBytesPerDestination` est **un seul reglage global** applique par
   `-remoteWrite.maxDiskUsagePerURL` a chaque sortie, quel que soit le mode de
   lancement de vmagent. Ce n'est pas un plafond global du disque : N sorties
@@ -417,14 +418,26 @@ limite produit une erreur explicite, jamais une reponse tronquee silencieuse.
   (ordre GeoJSON). Un couple incomplet retourne `null`, jamais une position
   hybride de deux sources ou de deux instants.
 - Les intervalles suivent `from`, `to`, `duration`, `resolution` de l'API
-  History. Avec `resolution`, regrouper les echantillons en buckets
+  History. Les bornes `from` et `to` sont inclusives. Avec `resolution`,
+  regrouper les echantillons en buckets
   `[from+n*resolution, from+(n+1)*resolution)` et n'emettre que les buckets
   ayant au moins une mesure; sans `resolution`, retourner les timestamps
   bruts dans la limite configuree. Les lignes sont triees et les colonnes
   suivent l'ordre des `pathSpecs`; une case sans donnee est `null`.
-- Pour les scalaires numeriques, la v1 implemente `average`, `min`, `max`,
-  `first`, `last`, `mid` et `middle_index`; `sma` et `ema` sont refusees avec
-  une erreur explicite. Pour les angles en radians, `average` est circulaire.
+- Pour les scalaires numeriques, le provider implemente `average`, `min`, `max`,
+  `first`, `last`, `mid`, `middle_index`, `sma:N` et `ema:alpha`. Les parametres
+  par defaut sont respectivement 5 echantillons et 0.2; N doit etre un entier
+  positif, alpha doit etre dans `(0, 1]`. Le lissage suit les echantillons bruts
+  dans l'ordre timestamp/source, separement par source en mode `all` et apres
+  fusion en mode par defaut. Il est initialise au premier echantillon de la
+  periode demandee : SMA utilise une fenetre partielle au debut, EMA part de
+  cette premiere valeur. Chaque bucket retourne son dernier resultat lisse.
+  Aucun echantillon anterieur a `from` ne sert d'amorcage; changer `from` peut
+  donc modifier les premiers resultats. Seuls les paths dont la metadonnee
+  Signal K declare `units: rad` utilisent `average`, `sma` et `ema` circulaires.
+  En l'absence de cette unite, l'agregation est arithmetique; aucune inference
+  n'est faite depuis le nom du path. Les resultats circulaires sont normalises
+  dans `[0, 2π)`, meme pour des valeurs brutes signees.
   Pour `navigation.position`, seules `first`, `last` et `middle_index` sont
   prises en charge en v1; la moyenne d'une position n'est pas la moyenne
   independante des coordonnees. Les autres methodes sont refusees, jamais
@@ -436,8 +449,8 @@ limite produit une erreur explicite, jamais une reponse tronquee silencieuse.
   connaitre le type du path. Si un path contient des valeurs non numeriques,
   le provider applique `last` a toute la colonne et annonce `method: last`
   dans la reponse, meme si `average` etait explicitement demande. Les paths
-  exclusivement numeriques conservent `average`. `min`, `max` et `mid`
-  restent reserves aux valeurs numeriques.
+  exclusivement numeriques conservent `average`. `min`, `max`, `mid`, `sma`
+  et `ema` restent reserves aux valeurs numeriques.
 - `getContexts` et `getPaths` sont bornes par les jours UTC contenant la
   periode demandee et par les labels du selecteur de lecture. Sans labels distinctifs dans un TSDB
   partage, ils peuvent remonter les series d'autres producteurs : c'est une

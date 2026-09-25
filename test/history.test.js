@@ -7,11 +7,12 @@ const from = '2026-09-23T12:00:00.000Z'
 const to = '2026-09-23T12:00:03.000Z'
 const t = Date.parse(from)
 
-function provider(rows, onUrl = () => {}) {
+function provider(rows, onUrl = () => {}, getMetadata = () => undefined) {
   return new VictoriaMetricsHistory({
     baseUrl: 'http://localhost:8428',
     selfContext: 'vessels.boat',
     labels: { instance: 'boat-1' },
+    getMetadata,
     fetchImpl: async url => {
       onUrl(new URL(url))
       const label = new URL(url).pathname.match(/\/label\/(context|signalk_path)\/values$/)?.[1]
@@ -44,6 +45,24 @@ test('uses destination Basic Auth on History requests', async () => {
   })
   await history.getPaths({ from, to })
   assert.equal(headers.Authorization, `Basic ${Buffer.from('reader:s:ecret').toString('base64')}`)
+})
+
+test('uses destination bearer token on History export and discovery requests', async () => {
+  const requests = []
+  const history = new VictoriaMetricsHistory({
+    baseUrl: 'https://example.test', selfContext: 'vessels.boat',
+    auth: { type: 'bearer', token: 'opaque.token' },
+    fetchImpl: async (url, options) => {
+      requests.push({ url, headers: options.headers })
+      return new Response(new URL(url).pathname.includes('/label/')
+        ? JSON.stringify({ status: 'success', data: [] })
+        : JSON.stringify({ metric: { source: 'sensor' }, values: [1], timestamps: [t] }))
+    }
+  })
+  await history.getValues({ from, to, pathSpecs: [{ path: 'navigation.headingTrue' }] })
+  await history.getPaths({ from, to })
+  assert.equal(requests.length, 2)
+  assert.ok(requests.every(request => request.headers.Authorization === 'Bearer opaque.token'))
 })
 
 test('reads raw values across source changes and filters by historical source', async () => {
@@ -89,6 +108,36 @@ test('resolution buckets samples in the default merged column', async () => {
   const history = provider([{ metric: { source: 'a' }, values: [2, 4], timestamps: [t, t + 1000] }])
   const result = await history.getValues({ from, to, resolution: 2, pathSpecs: [{ path: 'navigation.speedOverGround', aggregate: 'average' }] })
   assert.deepEqual(result.data, [[from, 3]])
+})
+
+test('includes samples exactly at to, even when VM export uses an exclusive end', async () => {
+  const samples = [
+    { timestamp: t - 1, value: 0 },
+    { timestamp: t, value: 1 },
+    { timestamp: t + 1000, value: 2 },
+    { timestamp: Date.parse(to), value: 3 },
+    { timestamp: Date.parse(to) + 1, value: 4 }
+  ]
+  const history = new VictoriaMetricsHistory({
+    baseUrl: 'http://localhost:8428', selfContext: 'vessels.boat',
+    fetchImpl: async url => {
+      const end = Number(new URL(url).searchParams.get('end')) * 1000
+      assert.ok(end > Date.parse(to))
+      const exported = samples.filter(sample => sample.timestamp < end)
+      return new Response(JSON.stringify({
+        metric: { source: 'gps' },
+        values: exported.map(sample => sample.value),
+        timestamps: exported.map(sample => sample.timestamp)
+      }))
+    }
+  })
+  const query = { from, to, pathSpecs: [{ path: 'navigation.speedOverGround' }] }
+  assert.deepEqual((await history.getValues(query)).data, [
+    [from, 1], ['2026-09-23T12:00:01.000Z', 2], [to, 3]
+  ])
+  assert.deepEqual((await history.getValues({ ...query, resolution: 2, sourcePolicy: 'all' })).data, [
+    [from, 1.5], ['2026-09-23T12:00:02.000Z', 3]
+  ])
 })
 
 test('sourcePolicy=all splits stored sources into aligned columns', async () => {
@@ -174,12 +223,132 @@ test('sourcePolicy=all keeps source-less samples without treating them as an err
 })
 
 test('averages common Signal K angle paths across zero', async () => {
-  const history = provider([{ metric: { source: 'compass' }, values: [6.2, 0.08], timestamps: [t, t + 1000] }])
+  const history = provider([{ metric: { source: 'compass' }, values: [6.2, 0.08], timestamps: [t, t + 1000] }],
+    () => {}, () => ({ units: 'rad' }))
   for (const path of ['navigation.headingMagnetic', 'navigation.headingTrue', 'navigation.courseOverGroundTrue']) {
     const result = await history.getValues({ from, to, resolution: 2, pathSpecs: [{ path, aggregate: 'average' }] })
     const angle = result.data[0][1]
     assert.ok(Math.min(angle, 2 * Math.PI - angle) < 0.1, `${path}: ${angle}`)
   }
+})
+
+test('only metadata with units rad enables circular aggregation', async () => {
+  const rows = [{ metric: { source: 'compass' }, values: [6.2, 0.08], timestamps: [t, t + 1000] }]
+  const path = 'custom.orientation'
+  const requested = []
+  const radians = provider(rows, () => {}, fullPath => {
+    requested.push(fullPath)
+    return { units: 'rad' }
+  })
+  const circular = await radians.getValues({ from, to, resolution: 2, pathSpecs: [{ path }] })
+  assert.deepEqual(requested, ['vessels.boat.custom.orientation'])
+  assert.ok(Math.min(circular.data[0][1], 2 * Math.PI - circular.data[0][1]) < 0.1)
+
+  const namedAngle = 'navigation.headingTrue'
+  const linear = await provider(rows, () => {}, () => ({ units: 'deg' }))
+    .getValues({ from, to, resolution: 2, pathSpecs: [{ path: namedAngle }] })
+  assert.deepEqual(linear.data, [[from, 3.14]])
+  const missing = await provider(rows).getValues({ from, to, resolution: 2, pathSpecs: [{ path: namedAngle }] })
+  assert.deepEqual(missing.data, [[from, 3.14]])
+
+  const signed = await provider([{ metric: { source: 'wind' }, values: [-0.2, -0.1], timestamps: [t, t + 1000] }],
+    () => {}, () => ({ units: 'rad' }))
+    .getValues({ from, to, resolution: 2, pathSpecs: [{ path: 'environment.wind.angleApparent' }] })
+  assert.ok(signed.data[0][1] >= 0 && signed.data[0][1] < 2 * Math.PI)
+  assert.ok(Math.abs(signed.data[0][1] - (2 * Math.PI - 0.15)) < 1e-10)
+})
+
+test('sma uses a sample-count window, including partial windows at the requested start', async () => {
+  const history = provider([{ metric: { source: 'gps' }, values: [2, 4, 10, 8], timestamps: [t, t + 1000, t + 4000, t + 5000] }])
+  const query = { from, to: '2026-09-23T12:00:06.000Z', pathSpecs: [
+    { path: 'navigation.speedOverGround', aggregate: 'sma', parameter: ['3'] }
+  ] }
+  const raw = await history.getValues(query)
+  assert.deepEqual(raw.values, [{ path: 'navigation.speedOverGround', method: 'sma' }])
+  assert.deepEqual(raw.data, [
+    [from, 2], ['2026-09-23T12:00:01.000Z', 3],
+    ['2026-09-23T12:00:04.000Z', 16 / 3], ['2026-09-23T12:00:05.000Z', 22 / 3]
+  ])
+  assert.deepEqual((await history.getValues({ ...query, resolution: 2 })).data, [
+    [from, 3], ['2026-09-23T12:00:04.000Z', 22 / 3]
+  ])
+  assert.deepEqual((await history.getValues({ ...query, from: '2026-09-23T12:00:04.000Z' })).data, [
+    ['2026-09-23T12:00:04.000Z', 10], ['2026-09-23T12:00:05.000Z', 9]
+  ])
+})
+
+test('ema uses the first sample as its seed and the requested alpha', async () => {
+  const history = provider([{ metric: { source: 'gps' }, values: [10, 20, 30], timestamps: [t, t + 1000, t + 2000] }])
+  const path = 'navigation.speedOverGround'
+  const query = { from, to, pathSpecs: [{ path, aggregate: 'ema', parameter: ['0.5'] }] }
+  assert.deepEqual((await history.getValues(query)).data, [
+    [from, 10], ['2026-09-23T12:00:01.000Z', 15], ['2026-09-23T12:00:02.000Z', 22.5]
+  ])
+  assert.deepEqual((await history.getValues({ ...query, resolution: 2 })).data, [
+    [from, 15], ['2026-09-23T12:00:02.000Z', 22.5]
+  ])
+  assert.deepEqual((await history.getValues({ ...query, from: '2026-09-23T12:00:01.000Z' })).data, [
+    ['2026-09-23T12:00:01.000Z', 20], ['2026-09-23T12:00:02.000Z', 25]
+  ])
+})
+
+test('smoothing defaults and parameters are validated', async () => {
+  const history = provider([{ metric: { source: 'gps' }, values: [10, 20], timestamps: [t, t + 1000] }])
+  const query = (aggregate, parameter) => ({ from, to, pathSpecs: [{ path: 'navigation.speedOverGround', aggregate, parameter }] })
+  assert.deepEqual((await history.getValues(query('sma'))).data, [
+    [from, 10], ['2026-09-23T12:00:01.000Z', 15]
+  ])
+  assert.deepEqual((await history.getValues(query('ema'))).data, [
+    [from, 10], ['2026-09-23T12:00:01.000Z', 12]
+  ])
+  for (const parameter of [['0'], ['2.5'], ['abc'], ['2', '3']]) {
+    await assert.rejects(history.getValues(query('sma', parameter)), /Invalid History sma parameter/)
+  }
+  for (const parameter of [['0'], ['1.1'], ['abc'], ['0.2', '0.3']]) {
+    await assert.rejects(history.getValues(query('ema', parameter)), /Invalid History ema parameter/)
+  }
+  await assert.rejects(history.getValues({ from, to, pathSpecs: [{ path: 'navigation.position', aggregate: 'sma' }] }),
+    /Unsupported History aggregate for navigation.position: sma/)
+})
+
+test('smoothing separates stored sources when requested and merges them otherwise', async () => {
+  const history = provider([
+    { metric: { source: 'b' }, values: [10, 20], timestamps: [t, t + 2000] },
+    { metric: { source: 'a' }, values: [2, 4, 6], timestamps: [t, t + 1000, t + 2000] }
+  ])
+  const pathSpecs = [{ path: 'navigation.speedOverGround', aggregate: 'sma', parameter: ['2'] }]
+  const split = await history.getValues({ from, to, sourcePolicy: 'all', pathSpecs })
+  assert.deepEqual(split.values, [
+    { path: 'navigation.speedOverGround', method: 'sma', $source: 'a' },
+    { path: 'navigation.speedOverGround', method: 'sma', $source: 'b' }
+  ])
+  assert.deepEqual(split.data, [
+    [from, 2, 10], ['2026-09-23T12:00:01.000Z', 3, null], ['2026-09-23T12:00:02.000Z', 5, 15]
+  ])
+  assert.deepEqual((await history.getValues({ from, to, pathSpecs })).data, [
+    [from, 6], ['2026-09-23T12:00:01.000Z', 7], ['2026-09-23T12:00:02.000Z', 13]
+  ])
+  assert.deepEqual((await history.getValues({ from, to, pathSpecs: [{ ...pathSpecs[0], sourceRef: 'b' }] })).data, [
+    [from, 10], ['2026-09-23T12:00:02.000Z', 15]
+  ])
+})
+
+test('sma and ema smooth angles circularly and reject nonnumeric values', async () => {
+  const angles = provider([{ metric: { source: 'compass' }, values: [6.2, 0.08], timestamps: [t, t + 1000] }],
+    () => {}, () => ({ units: 'rad' }))
+  for (const [aggregate, parameter] of [['sma', ['2']], ['ema', ['0.5']]]) {
+    const result = await angles.getValues({ from, to, pathSpecs: [{ path: 'navigation.headingTrue', aggregate, parameter }] })
+    const angle = result.data[1][1]
+    assert.ok(Math.min(angle, 2 * Math.PI - angle) < 0.1, `${aggregate}: ${angle}`)
+  }
+  const cancelled = provider([{ metric: { source: 'compass' }, values: [0, Math.PI], timestamps: [t, t + 1000] }],
+    () => {}, () => ({ units: 'rad' }))
+  assert.equal((await cancelled.getValues({ from, to, pathSpecs: [
+    { path: 'navigation.headingTrue', aggregate: 'sma', parameter: ['2'] }
+  ] })).data[1][1], null)
+  const strings = provider([{ metric: { source: 'sensor', value_str: 'sailing' }, values: [1], timestamps: [t] }])
+  await assert.rejects(strings.getValues({ from, to, pathSpecs: [{ path: 'navigation.state', aggregate: 'ema' }] }),
+    /ema requires numeric values/)
 })
 
 test('same-timestamp sources are both included in numeric aggregates', async () => {

@@ -40,14 +40,15 @@ function NumberField({ label, value, onChange, min = 0, max, step = 1, hint }) {
   </Field>
 }
 
-function BasicAuthFields({ auth, onChange }) {
+function AuthenticationFields({ auth, onChange }) {
   return <>
     <Field label="Authentication" hint="Shared by Remote Write and History. Use HTTPS for remote servers.">
       <select style={styles.input} value={auth?.type ?? 'none'} onChange={event => onChange(event.target.value === 'basic'
         ? { type: 'basic', username: '', password: '' }
-        : undefined)}>
+        : event.target.value === 'bearer' ? { type: 'bearer', token: '' } : undefined)}>
         <option value="none">None</option>
         <option value="basic">Basic Auth</option>
+        <option value="bearer">Bearer token</option>
       </select>
     </Field>
     {auth?.type === 'basic' && <>
@@ -56,6 +57,10 @@ function BasicAuthFields({ auth, onChange }) {
       <Field label="Password"><input style={styles.input} type="password" value={auth.password ?? ''}
         autoComplete="new-password" onChange={event => onChange({ ...auth, password: event.target.value })} /></Field>
     </>}
+    {auth?.type === 'bearer' && <Field label="Token" hint="Enter the token only, without the Bearer prefix.">
+      <input style={styles.input} type="password" value={auth.token ?? ''}
+        autoComplete="new-password" onChange={event => onChange({ ...auth, token: event.target.value })} />
+    </Field>}
   </>
 }
 
@@ -277,7 +282,7 @@ export default function PluginConfigurationPanel({ configuration, save }) {
             </Field>
             {destination.kind === 'victoriametrics' && destination.mode === 'remote' && <Field label="VictoriaMetrics base URL"><input style={styles.input} type="url" value={destination.url ?? ''} onChange={event => updateDestination(index, { url: event.target.value })} placeholder="https://host:8428" /></Field>}
             {destination.kind === 'prometheus-compatible' && destination.mode === 'remote' && <Field label="Remote Write URL"><input style={styles.input} type="url" value={destination.write?.url ?? ''} onChange={event => updateDestinationPart(index, 'write', { url: event.target.value })} placeholder="https://host/api/v1/write" /></Field>}
-            {destination.mode === 'remote' && <BasicAuthFields auth={destination.auth}
+            {destination.mode === 'remote' && <AuthenticationFields auth={destination.auth}
               onChange={auth => updateDestination(index, { auth })} />}
           </div>
           {destination.read?.enabled && <details style={styles.details}>
