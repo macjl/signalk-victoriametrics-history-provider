@@ -156,7 +156,7 @@ export default function PluginConfigurationPanel({ configuration, save }) {
               </Field>
             </div>
             {ingest.filterMode !== 'none' && <div style={{ marginTop: 16 }}>
-              <Field label="Signal K paths" hint="One path per line. An empty exclude list includes all paths.">
+              <Field label="Signal K paths" hint="One path or pattern per line. * matches any characters, including dots; paths without * also include their descendants.">
                 <textarea style={styles.textarea} value={pathsText} onChange={event => {
                   setPathsText(event.target.value)
                   updateIngest({ paths: event.target.value.split('\n').map(path => path.trim()).filter(Boolean) })
@@ -182,7 +182,7 @@ export default function PluginConfigurationPanel({ configuration, save }) {
                 hint="Warning only. Ingestion continues." />
             </div>
             <div style={{ marginTop: 16 }}>
-              <Field label="Paths exempt from cardinality alerts" hint="One Signal K path per line. This does not exclude any data from ingestion.">
+              <Field label="Paths exempt from cardinality alerts" hint="One path or pattern per line. * matches any characters, including dots. Data is still ingested.">
                 <textarea style={styles.textarea} value={alertPathsText} onChange={event => {
                   setAlertPathsText(event.target.value)
                   updateIngest({ cardinalityAlert: { ...ingest.cardinalityAlert,

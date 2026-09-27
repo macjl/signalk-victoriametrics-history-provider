@@ -1,10 +1,7 @@
 import { createHash } from 'node:crypto'
+import { pathPatternMatches } from './path-pattern.js'
 
 const MAX_TRACKED_PATHS = 500
-
-function excluded(path, paths) {
-  return paths.some(root => path === root || path.startsWith(`${root}.`))
-}
 
 function fingerprint(labels) {
   const canonical = JSON.stringify(Object.entries(labels).sort(([a], [b]) => a.localeCompare(b)))
@@ -35,7 +32,7 @@ export class CardinalityAlert {
     let changed = this.rollover(now)
     for (const sample of samples) {
       const path = sample.labels.signalk_path
-      if (excluded(path, this.excludedPaths) || this.alerts.has(path)) continue
+      if (this.excludedPaths.some(pattern => pathPatternMatches(path, pattern)) || this.alerts.has(path)) continue
       let series = this.paths.get(path)
       if (!series) {
         if (this.paths.size >= MAX_TRACKED_PATHS) {

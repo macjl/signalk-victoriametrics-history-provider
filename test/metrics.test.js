@@ -65,6 +65,29 @@ test('filters original leaves and drops invalid sources and values', () => {
   assert.deepEqual(deltaToSamples(delta, selected, self), [])
 })
 
+test('wildcard ingestion filters select dynamic paths in both modes', () => {
+  const delta = { context: self, updates: [{ $source: 'sensor', values: [
+    { path: 'resources.regions.a1', value: { name: 'zone' } },
+    { path: 'resources.regions.b2', value: 2 },
+    { path: 'resources.regionStatus', value: 3 }
+  ] }] }
+  const selected = { ...config, paths: ['resources.regions.*'] }
+  assert.deepEqual(deltaToSamples(delta, selected, self).map(item => item.labels.signalk_path), [
+    'resources.regionStatus'
+  ])
+  assert.deepEqual(deltaToSamples(delta, { ...selected, filterMode: 'whitelist' }, self)
+    .map(item => item.labels.signalk_path), ['resources.regions.a1', 'resources.regions.b2'])
+})
+
+test('wildcard position filtering still requires both coordinates', () => {
+  const delta = { context: self, updates: [{ $source: 'gps', values: [
+    { path: 'navigation.position', value: { longitude: 1, latitude: 2 } }
+  ] }] }
+  const selected = { ...config, filterMode: 'whitelist', paths: ['navigation.position.*'] }
+  assert.equal(deltaToSamples(delta, selected, self).length, 2)
+  assert.deepEqual(deltaToSamples(delta, { ...selected, paths: ['navigation.position.latitude*'] }, self), [])
+})
+
 test('encodes string and JSON types without turning booleans into untyped numbers', () => {
   const samples = deltaToSamples({ context: self, updates: [{ $source: 'sensor', values: [
     { path: 'navigation.state', value: 'moored' },

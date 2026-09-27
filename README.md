@@ -104,6 +104,10 @@ The plugin warns when a Signal K path produces 100 distinct metric series in
 one UTC day. This is an alert only: every sample continues through ingestion.
 In **Advanced cardinality alert**, the threshold can be adjusted from 2 to
 250, and paths can be exempted from the alert without excluding their data.
+In both **Advanced path filtering** and the cardinality exemptions, `*` matches
+any characters, including dots. For example, `resources.regions.*` covers
+dynamic region IDs and their descendants. A pattern with `*` matches the
+whole path; a plain path continues to include itself and its descendants.
 The monitor tracks at most 500 paths and reports when that bound is reached.
 Its counters reset on restart and at midnight UTC; the warning is not an
 authoritative count of historical series already stored in a destination.

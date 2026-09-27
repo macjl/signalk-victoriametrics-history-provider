@@ -1,15 +1,13 @@
+import { pathPatternMatches } from './path-pattern.js'
+
 export function metricName(path) {
   const name = path.replace(/[^a-zA-Z0-9_:]/g, '_')
   return /^[a-zA-Z_:]/.test(name) ? name : `_${name}`
 }
 
-function pathMatches(path, selected) {
-  return selected.some(root => path === root || path.startsWith(`${root}.`))
-}
-
 function allowed(path, config) {
   if (config.filterMode === 'none') return true
-  const matches = pathMatches(path, config.paths)
+  const matches = config.paths.some(pattern => pathPatternMatches(path, pattern))
   return config.filterMode === 'whitelist' ? matches : !matches
 }
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.6
+
+- Accept `*` path patterns in ingestion filters and cardinality-alert exemptions.
+
 ## 0.1.5
 
 - Support bearer-token authentication for remote destinations, shared by Remote Write and History.

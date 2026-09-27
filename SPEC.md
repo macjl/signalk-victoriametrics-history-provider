@@ -137,7 +137,9 @@ n'est pas un binaire pilote par le plugin.
   liste blanche vide est invalide. En mode `none`, les chemins restent configures
   mais n'ont aucun effet. Le reglage est dans une section avancee repliable;
   son resume indique le mode actif et le nombre de chemins. Les chemins racines d'objets autorisent
-  leurs sous-champs; un champ exclu ne doit pas etre emis par accident.
+  leurs sous-champs; un champ exclu ne doit pas etre emis par accident. Un path
+  sans `*` designe lui-meme et ses descendants. Avec `*`, le motif s'applique
+  au path entier et `*` couvre zero ou plusieurs caracteres, points compris.
 - `sourcePolicy` vaut `preferred` ou `all`. En mode `all`, aucune indication de
   preference historique n'est deduite du flux brut. `periodMs` vaut 5000 par
   defaut et doit etre positif. Avec `policy: fixed`, Signal K retient le dernier
@@ -168,7 +170,8 @@ n'est pas un binaire pilote par le plugin.
 - `cardinalityAlert.maxSeriesPerPathPerDay` vaut 100 par defaut (2 a 250).
   Les combinaisons distinctes de labels sont comptees par `signalk_path` sur
   le jour UTC de reception. `excludedPaths` supprime l'alerte pour les paths
-  indiques et leurs descendants, sans les exclure de l'ingestion. Aucune
+  indiques et leurs descendants, sans les exclure de l'ingestion. Les motifs
+  avec `*` suivent la meme regle que le filtre d'ingestion. Aucune
   alerte ne supprime ou ne modifie une mesure.
 
 ### 3.2 vmagent et destinations
