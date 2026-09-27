@@ -336,10 +336,14 @@ navigation_position_latitude{context="...",source="can0.device",signalk_path="na
   Pour `first`, `last` et `middle_index`, seule la premiere source dans l'ordre
   lexicographique est prise a timestamp egal; cela ne designe pas une
   preference Signal K.
-- Emettre une metrique de debut de session propre au plugin pour permettre aux
-  alertes de distinguer les etats recus avant/apres un redemarrage. Elle ne
-  remplace pas l'ancienne metrique de session de l'exporter et la migration des
-  alertes doit etre explicite.
+- Emettre `signalk_metrics_session_start_time_seconds` avec la date de debut de
+  la session du plugin en secondes Unix, les labels `job`/`instance` configures
+  et `source="signalk-victoriametrics-history-provider"`. La meme valeur est
+  envoyee au demarrage puis toutes les 15 s avec un timestamp d'echantillon
+  actualise, meme sans delta Signal K. Aucun `signalk_path` n'est ajoute.
+  Un redemarrage de vmagent seul ne change pas cette valeur. La metrique n'est
+  pas emise en lecture seule. Elle ne remplace pas l'ancienne metrique de
+  session de l'exporter; les alertes doivent migrer explicitement.
 
 ## 5. Ecriture, charge et erreurs
 

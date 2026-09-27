@@ -139,6 +139,14 @@ destination. The series use `job="signalk-vmagent"`, the vessel context, and an
 `instance` label from the saved plugin configuration.
 Read-only mode does not start vmagent and therefore has no self-scrape.
 
+While ingestion is active, the plugin also sends
+`signalk_metrics_session_start_time_seconds` at startup and every 15 seconds.
+Its value is the plugin session start time in Unix seconds; the sample timestamp
+is refreshed on each send. It carries the configured `job` and `instance` labels
+and `source="signalk-victoriametrics-history-provider"`, but no `signalk_path`.
+Restarting vmagent alone does not change the session value. Read-only mode
+does not emit this metric.
+
 For an external destination, select **Basic Auth** or **Bearer token** under its
 URL and enter the credential. The same credential is used for Remote Write and
 History when both are enabled. Remote Write uses private credential files read

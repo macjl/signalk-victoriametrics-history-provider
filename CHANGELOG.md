@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.7
+
+- Emit a generic `signalk_metrics_session_start_time_seconds` gauge while ingestion is active.
+
 ## 0.1.6
 
 - Accept `*` path patterns in ingestion filters and cardinality-alert exemptions.

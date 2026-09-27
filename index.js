@@ -10,6 +10,7 @@ import { parseVmagentStatus } from './src/vmagent-status.js'
 import { proxyManagedUi } from './src/web-ui-proxy.js'
 import { withIdentityLabels } from './src/identity-labels.js'
 import { CardinalityAlert } from './src/cardinality-alert.js'
+import { startSessionMetric } from './src/session-metric.js'
 
 const id = 'signalk-victoriametrics-history-provider'
 
@@ -28,6 +29,7 @@ export default function createPlugin(app) {
   let managed = null
   let batcher = null
   let healthTimer = null
+  let stopSessionMetric = null
   let unsubscribes = []
   let historyRegistered = false
   let agentFailed = false
@@ -75,6 +77,8 @@ export default function createPlugin(app) {
     unsubscribes = []
     if (healthTimer) clearInterval(healthTimer)
     healthTimer = null
+    stopSessionMetric?.()
+    stopSessionMetric = null
     batcher?.stop()
     batcher = null
     cardinality = null
@@ -102,6 +106,7 @@ export default function createPlugin(app) {
     const previous = cleanup(false)
     const identity = withIdentityLabels(raw)
     const options = validateConfig(identity.configuration)
+    const sessionStartedAt = Date.now()
     const ingestStatus = `Ingesting ${options.ingest.sourcePolicy} Signal K deltas`
     const reader = options.destinations.find(destination => destination.read?.enabled)
     if (options.destinations.some(destination => destination.mode === 'host-binary')) {
@@ -199,6 +204,7 @@ export default function createPlugin(app) {
           },
           onError: error => { if (current === generation) setAgentError(error.message) }
         })
+        stopSessionMetric = startSessionMetric(batcher, options.ingest.labels, sessionStartedAt)
         let bootstrapping = true
         app.subscriptionmanager.subscribe(subscriptionRequest(options.ingest), unsubscribes, error => { if (current === generation) setAgentError(String(error)) }, delta => {
           if (bootstrapping || current !== generation) return
